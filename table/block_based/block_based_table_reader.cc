@@ -2048,6 +2048,8 @@ bool BlockBasedTable::IsLastLevel() const {
   return rep_->level == rep_->ioptions.num_levels - 1;
 }
 
+Logger* BlockBasedTable::GetInfoLog() const { return rep_->ioptions.logger; }
+
 InternalIterator* BlockBasedTable::NewIterator(
     const ReadOptions& read_options, const SliceTransform* prefix_extractor,
     Arena* arena, bool skip_filters, TableReaderCaller caller,

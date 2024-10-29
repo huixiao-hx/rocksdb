@@ -10,6 +10,7 @@
 #include <deque>
 
 #include "db/seqno_to_time_mapping.h"
+#include "logging/logging.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/block_based/block_based_table_reader_impl.h"
 #include "table/block_based/block_prefetcher.h"
@@ -414,6 +415,7 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
   }
 
   bool IsNextBlockOutOfReadaheadBound() {
+    Logger* info_log = table_->GetInfoLog();
     const Slice& index_iter_user_key = index_iter_->user_key();
     // If curr block's index key >= iterate_upper_bound, it means all the keys
     // in next block or above are out of bound.
@@ -426,6 +428,9 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
              ? true
              : false);
     if (out_of_upper_bound) {
+      if (info_log != nullptr) {
+        ROCKS_LOG_INFO(info_log, "Trim by upper bound");
+      }
       return true;
     }
 
@@ -444,9 +449,15 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
                     /*b_has_ts=*/false) > 0));
 
     if (out_of_prefix_bound) {
+      if (info_log != nullptr) {
+        ROCKS_LOG_INFO(info_log, "Trim by prefix");
+      }
       return true;
     }
 
+    // if (info_log != nullptr) {
+    //   ROCKS_LOG_INFO(info_log, "No trim");
+    // }
     return false;
   }
 

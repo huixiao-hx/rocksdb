@@ -123,6 +123,8 @@ class BlockBasedTable : public TableReader {
                            BlockCacheLookupContext* lookup_context,
                            bool* filter_checked) const;
 
+  Logger* GetInfoLog() const;
+
   // Returns a new iterator over the table contents.
   // The result of NewIterator() is initially invalid (caller must
   // call one of the Seek methods on the iterator before using it).

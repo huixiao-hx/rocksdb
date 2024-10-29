@@ -5637,7 +5637,8 @@ void DBImpl::EraseThreadStatusDbInfo() const {}
 //
 // A global method that can dump out the build version
 void DumpRocksDBBuildVersion(Logger* log) {
-  ROCKS_LOG_HEADER(log, "RocksDB version: %s\n",
+  ROCKS_LOG_HEADER(log,
+                   "RocksDB version: %s with debugging info for readahead\n",
                    GetRocksVersionAsString().c_str());
   const auto& props = GetRocksBuildProperties();
   const auto& sha = props.find("rocksdb_build_git_sha");

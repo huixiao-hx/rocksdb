@@ -37,6 +37,7 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
                                        bool async_prefetch) {
   // TODO(hx235): set `seek_key_prefix_for_readahead_trimming_`
   // even when `target == nullptr` that is when `SeekToFirst()` is called
+  Logger* info_log = table_->GetInfoLog();
   if (target != nullptr && prefix_extractor_ &&
       read_options_.prefix_same_as_start) {
     const Slice& seek_user_key = ExtractUserKey(*target);
@@ -44,6 +45,22 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
         prefix_extractor_->InDomain(seek_user_key)
             ? prefix_extractor_->Transform(seek_user_key).ToString()
             : "";
+    if (info_log != nullptr) {
+      if (seek_key_prefix_for_readahead_trimming_ == "") {
+        ROCKS_LOG_INFO(info_log,
+                       "seek_key_prefix_for_readahead_trimming_ not set");
+      } else {
+        ROCKS_LOG_INFO(info_log, "seek_key_prefix_for_readahead_trimming_ set");
+      }
+    }
+  } else {
+    if (info_log != nullptr) {
+      ROCKS_LOG_INFO(
+          info_log, "Target: %s Prefix extractor: %s prefix_same_as_start: %s ",
+          target != nullptr ? "non null" : "null",
+          prefix_extractor_ != nullptr ? "non null" : "null",
+          read_options_.prefix_same_as_start ? "true" : "false");
+    }
   }
 
   bool is_first_pass = !async_read_in_progress_;
@@ -63,6 +80,23 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
       table_->get_rep()->table_options.block_cache.get() &&
       direction_ == IterDirection::kForward) {
     readahead_cache_lookup_ = true;
+    ROCKS_LOG_INFO(info_log, "YES readahead cache lookup");
+  } else {
+    if (info_log != nullptr) {
+      ROCKS_LOG_INFO(info_log, "No readahead cache lookup");
+      ROCKS_LOG_INFO(
+          info_log,
+          "autotune_readaheadsize: %s is_first_pass: %s auto_readahead_size: "
+          "%s iterate_upper_bound: %s prefix_same_as_start: %s block_cache: %s "
+          "direction: %s",
+          autotune_readaheadsize ? "true" : "false",
+          is_first_pass ? "true" : "false",
+          read_options_.auto_readahead_size ? "true" : "false",
+          read_options_.iterate_upper_bound ? "true" : "false",
+          read_options_.prefix_same_as_start ? "true" : "false",
+          table_->get_rep()->table_options.block_cache.get() ? "true" : "false",
+          direction_ == IterDirection::kForward ? "Forward" : "Non forward");
+    }
   }
 
   is_out_of_bound_ = false;
