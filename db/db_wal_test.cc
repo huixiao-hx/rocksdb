@@ -177,6 +177,95 @@ TEST_F(DBWALTestWithEnrichedEnv, SkipDeletedWALs) {
   SyncPoint::GetInstance()->DisableProcessing();
 }
 
+TEST_F(DBWALTest, WALHoleSkipSyncLastPortion) {
+  Options options = CurrentOptions();
+  options.wal_bytes_per_sync = 1024;
+  options.avoid_flush_during_shutdown = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+  options.manual_wal_flush = true;
+
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("key0", "smallv"));
+  const std::string big_v = "bigv" + std::string(1024 * 1024 * 15, 'v');
+  ASSERT_OK(Put("key1", big_v));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(Put("key2", "smallv"));
+  ASSERT_OK(Put("key3", big_v));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Reopen(options);
+
+  ASSERT_EQ("smallv", Get("key0"));
+  ASSERT_EQ("NOT_FOUND", Get("key1"));
+  ASSERT_EQ("smallv", Get("key2"));
+  ASSERT_EQ("NOT_FOUND", Get("key3"));
+
+  Close();
+}
+
+TEST_F(DBWALTest, WALHoleCleanTruncate) {
+  Options options = CurrentOptions();
+  options.avoid_flush_during_shutdown = true;
+  options.avoid_flush_during_recovery = true;
+
+  options.env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("key0", "smallv"));
+  const std::string big_v = "bigv" + std::string(1024 * 1024 * 15, 'v');
+  // truncate/fill with zero instead of skipp
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "DBImplWrite::SkipWALWrite", [&](void* arg) {
+        bool* skip_wal_write = static_cast<bool*>(arg);
+        *skip_wal_write = true;
+      });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  ASSERT_OK(Put("key1", big_v));
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearAllCallBacks();
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(Put("key2", "smallv"));
+
+  Close();
+  Reopen(options);
+
+  ASSERT_EQ("smallv", Get("key0"));
+  ASSERT_EQ("NOT_FOUND", Get("key1"));
+  ASSERT_EQ("smallv", Get("key2"));
+
+  Close();
+}
+
+TEST_F(DBWALTest, DisableWALEnableAgain) {
+  Options options = CurrentOptions();
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("key0", "wal"));
+  WriteOptions writeOpt = WriteOptions();
+  writeOpt.disableWAL = true;
+  ASSERT_OK(Put("key1", "no_wal", writeOpt));
+   writeOpt.disableWAL = false;
+  ASSERT_OK(Put("key2", "wal", writeOpt));
+
+  Close();
+}
+
 TEST_F(DBWALTest, WAL) {
   do {
     CreateAndReopenWithCF({"pikachu"}, CurrentOptions());
