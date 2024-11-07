@@ -534,16 +534,10 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         LogFileNumberSize& log_file_number_size =
             *(log_context.log_file_number_size);
         PERF_TIMER_GUARD(write_wal_time);
-        bool skip_wal_write = false;
-        TEST_SYNC_POINT_CALLBACK("DBImplWrite::SkipWALWrite", &skip_wal_write);
-        if (skip_wal_write) {
-          io_s = IOStatus::OK();
-        } else {
-          io_s = WriteToWAL(write_group, log_context.writer, log_used,
-                            log_context.need_log_sync,
-                            log_context.need_log_dir_sync, last_sequence + 1,
-                            log_file_number_size);
-        }
+        io_s =
+            WriteToWAL(write_group, log_context.writer, log_used,
+                       log_context.need_log_sync, log_context.need_log_dir_sync,
+                       last_sequence + 1, log_file_number_size);
       }
     } else {
       if (status.ok() && !write_options.disableWAL) {
@@ -1412,7 +1406,8 @@ IOStatus DBImpl::WriteToWAL(const WriteBatch& merged_batch,
   if (!io_s.ok()) {
     return io_s;
   }
-  io_s = log_writer->AddRecord(write_options, log_entry);
+  io_s = log_writer->AddRecord(write_options, log_entry,
+                               WriteBatchInternal::Sequence(&merged_batch));
 
   if (UNLIKELY(needs_locking)) {
     log_write_mutex_.Unlock();
@@ -2308,11 +2303,16 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
     if (!logs_.empty()) {
       // Alway flush the buffer of the last log before switching to a new one
       log::Writer* cur_log_writer = logs_.back().writer;
+      auto last_seqno = cur_log_writer->GetLastWriteSeqno();
+      io_s = new_log->AddLastSeqnoTypeRecord(write_options, last_seqno);
+      assert(io_s.ok());
       if (error_handler_.IsRecoveryInProgress()) {
         // In recovery path, we force another try of writing WAL buffer.
         cur_log_writer->file()->reset_seen_error();
       }
-      io_s = cur_log_writer->WriteBuffer(write_options);
+      if (io_s.ok()) {
+        io_s = cur_log_writer->WriteBuffer(write_options);
+      }
       if (s.ok()) {
         s = io_s;
       }

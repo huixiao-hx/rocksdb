@@ -1167,6 +1167,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
     min_wal_number =
         std::max(min_wal_number, versions_->MinLogNumberWithUnflushedData());
   }
+  SequenceNumber seqno_read_so_far = kMaxSequenceNumber;
   for (auto wal_number : wal_numbers) {
     if (wal_number < min_wal_number) {
       ROCKS_LOG_INFO(immutable_db_options_.info_log,
@@ -1255,9 +1256,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                              immutable_db_options_.wal_recovery_mode,
                              &record_checksum) &&
            status.ok()) {
-      auto seqno1 = versions_->LastSequence();
+      // Accumulated so far from reader
+      // auto seqno1 = versions_->LastSequence();
+      auto seqno1 = seqno_read_so_far;
       auto seqno2 = reader.GetLastSequence();
-      if (seqno2 != kMaxSequenceNumber && seqno1 < seqno2) {
+      if (seqno2 != kMaxSequenceNumber && seqno2 > seqno1) {
         return Status::Corruption("Previous log not recovered enough");
       }
       if (record.size() < WriteBatchInternal::kHeader) {
@@ -1307,7 +1310,7 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                                " is too large"));
         continue;
       }
-
+      seqno_read_so_far = sequence;
       if (immutable_db_options_.wal_recovery_mode ==
           WALRecoveryMode::kPointInTimeRecovery) {
         // In point-in-time recovery mode, if sequence id of log files are
@@ -2007,10 +2010,6 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                                immutable_db_options_.wal_compression);
     io_s = (*new_log)->AddCompressionTypeRecord(write_options);
   }
-  if (io_s.ok()) {
-    io_s = (*new_log)->AddLastSeqnoTypeRecord(write_options,
-                                              versions_->LastSequence());
-  }
   return io_s;
 }
 
@@ -2105,6 +2104,10 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
         impl->GetWalPreallocateBlockSize(max_write_buffer_size);
     s = impl->CreateWAL(write_options, new_log_number, 0 /*recycle_log_number*/,
                         preallocate_block_size, &new_log);
+    if (s.ok()) {
+      s = new_log->AddLastSeqnoTypeRecord(write_options,
+                                          impl->versions_->LastSequence());
+    }
     if (s.ok()) {
       // Prevent log files created by previous instance from being recycled.
       // They might be in alive_log_file_, and might get recycled otherwise.

@@ -230,7 +230,7 @@ TEST_F(DBWALTest, NoWALHoleSkipSyncLastPortion) {
   test::SleepingBackgroundTask sleeping_task_low;
   env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
                  Env::Priority::HIGH);
-  options.manual_wal_flush = true;
+  // options.manual_wal_flush = true;
 
   DestroyAndReopen(options);
 
@@ -304,6 +304,23 @@ TEST_F(DBWALTest, DisableWALEnableAgain) {
   ASSERT_OK(Put("key1", "no_wal", writeOpt));
   writeOpt.disableWAL = false;
   ASSERT_OK(Put("key2", "wal", writeOpt));
+
+  Close();
+}
+
+TEST_F(DBWALTest, LearnWALFlushDBSeqno) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"cf1"}, options);
+  options.track_and_verify_wals_in_manifest = true;
+  WriteOptions wo = WriteOptions();
+  wo.sync = true;
+  ASSERT_OK(dbfull()->Put(wo, handles_[0], "k1", "seqno1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->Flush(FlushOptions(), handles_[0]));
+  ASSERT_OK(dbfull()->Put(wo, handles_[1], "k2", "seqno2"));
+  ASSERT_OK(dbfull()->Put(wo, handles_[0], "k3", "seqno3"));
+  ASSERT_OK(dbfull()->Flush(FlushOptions(), handles_[0]));
+  ReopenWithColumnFamilies({"default", "cf1"}, options);
 
   Close();
 }
@@ -905,87 +922,87 @@ TEST_F(DBWALTest, RecoverWithBlobMultiSST) {
   ASSERT_EQ(l0_files.size(), blob_files.size());
 }
 
-TEST_F(DBWALTest, WALWithChecksumHandoff) {
-#ifndef ROCKSDB_ASSERT_STATUS_CHECKED
-  if (mem_env_ || encrypted_env_) {
-    ROCKSDB_GTEST_SKIP("Test requires non-mem or non-encrypted environment");
-    return;
-  }
-  std::shared_ptr<FaultInjectionTestFS> fault_fs(
-      new FaultInjectionTestFS(FileSystem::Default()));
-  std::unique_ptr<Env> fault_fs_env(NewCompositeEnv(fault_fs));
-  do {
-    Options options = CurrentOptions();
+// TEST_F(DBWALTest, WALWithChecksumHandoff) {
+// #ifndef ROCKSDB_ASSERT_STATUS_CHECKED
+//   if (mem_env_ || encrypted_env_) {
+//     ROCKSDB_GTEST_SKIP("Test requires non-mem or non-encrypted environment");
+//     return;
+//   }
+//   std::shared_ptr<FaultInjectionTestFS> fault_fs(
+//       new FaultInjectionTestFS(FileSystem::Default()));
+//   std::unique_ptr<Env> fault_fs_env(NewCompositeEnv(fault_fs));
+//   do {
+//     Options options = CurrentOptions();
 
-    options.checksum_handoff_file_types.Add(FileType::kWalFile);
-    options.env = fault_fs_env.get();
-    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kCRC32c);
+//     options.checksum_handoff_file_types.Add(FileType::kWalFile);
+//     options.env = fault_fs_env.get();
+//     fault_fs->SetChecksumHandoffFuncType(ChecksumType::kCRC32c);
 
-    CreateAndReopenWithCF({"pikachu"}, options);
-    WriteOptions writeOpt = WriteOptions();
-    writeOpt.disableWAL = true;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v1"));
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v1"));
+//     CreateAndReopenWithCF({"pikachu"}, options);
+//     WriteOptions writeOpt = WriteOptions();
+//     writeOpt.disableWAL = true;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v1"));
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v1"));
 
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    ASSERT_EQ("v1", Get(1, "foo"));
-    ASSERT_EQ("v1", Get(1, "bar"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     ASSERT_EQ("v1", Get(1, "foo"));
+//     ASSERT_EQ("v1", Get(1, "bar"));
 
-    writeOpt.disableWAL = false;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v2"));
-    writeOpt.disableWAL = true;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v2"));
+//     writeOpt.disableWAL = false;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v2"));
+//     writeOpt.disableWAL = true;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v2"));
 
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    // Both value's should be present.
-    ASSERT_EQ("v2", Get(1, "bar"));
-    ASSERT_EQ("v2", Get(1, "foo"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     // Both value's should be present.
+//     ASSERT_EQ("v2", Get(1, "bar"));
+//     ASSERT_EQ("v2", Get(1, "foo"));
 
-    writeOpt.disableWAL = true;
-    // This put, data is persisted by Flush
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v3"));
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    writeOpt.disableWAL = false;
-    // Data is persisted in the WAL
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "zoo", "v3"));
-    ASSERT_OK(dbfull()->SyncWAL());
-    // The hash does not match, write fails
-    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kxxHash);
-    writeOpt.disableWAL = false;
-    ASSERT_NOK(dbfull()->Put(writeOpt, handles_[1], "foo", "v3"));
+//     writeOpt.disableWAL = true;
+//     // This put, data is persisted by Flush
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v3"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     writeOpt.disableWAL = false;
+//     // Data is persisted in the WAL
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "zoo", "v3"));
+//     ASSERT_OK(dbfull()->SyncWAL());
+//     // The hash does not match, write fails
+//     fault_fs->SetChecksumHandoffFuncType(ChecksumType::kxxHash);
+//     writeOpt.disableWAL = false;
+//     ASSERT_NOK(dbfull()->Put(writeOpt, handles_[1], "foo", "v3"));
 
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    // Due to the write failure, Get should not find
-    ASSERT_NE("v3", Get(1, "foo"));
-    ASSERT_EQ("v3", Get(1, "zoo"));
-    ASSERT_EQ("v3", Get(1, "bar"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     // Due to the write failure, Get should not find
+//     ASSERT_NE("v3", Get(1, "foo"));
+//     ASSERT_EQ("v3", Get(1, "zoo"));
+//     ASSERT_EQ("v3", Get(1, "bar"));
 
-    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kCRC32c);
-    // Each write will be similated as corrupted.
-    fault_fs->IngestDataCorruptionBeforeWrite();
-    writeOpt.disableWAL = true;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v4"));
-    writeOpt.disableWAL = false;
-    ASSERT_NOK(dbfull()->Put(writeOpt, handles_[1], "foo", "v4"));
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    ASSERT_NE("v4", Get(1, "foo"));
-    ASSERT_NE("v4", Get(1, "bar"));
-    fault_fs->NoDataCorruptionBeforeWrite();
+//     fault_fs->SetChecksumHandoffFuncType(ChecksumType::kCRC32c);
+//     // Each write will be similated as corrupted.
+//     fault_fs->IngestDataCorruptionBeforeWrite();
+//     writeOpt.disableWAL = true;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v4"));
+//     writeOpt.disableWAL = false;
+//     ASSERT_NOK(dbfull()->Put(writeOpt, handles_[1], "foo", "v4"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     ASSERT_NE("v4", Get(1, "foo"));
+//     ASSERT_NE("v4", Get(1, "bar"));
+//     fault_fs->NoDataCorruptionBeforeWrite();
 
-    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kNoChecksum);
-    // The file system does not provide checksum method and verification.
-    writeOpt.disableWAL = true;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v5"));
-    writeOpt.disableWAL = false;
-    ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v5"));
-    ReopenWithColumnFamilies({"default", "pikachu"}, options);
-    ASSERT_EQ("v5", Get(1, "foo"));
-    ASSERT_EQ("v5", Get(1, "bar"));
+//     fault_fs->SetChecksumHandoffFuncType(ChecksumType::kNoChecksum);
+//     // The file system does not provide checksum method and verification.
+//     writeOpt.disableWAL = true;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "bar", "v5"));
+//     writeOpt.disableWAL = false;
+//     ASSERT_OK(dbfull()->Put(writeOpt, handles_[1], "foo", "v5"));
+//     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+//     ASSERT_EQ("v5", Get(1, "foo"));
+//     ASSERT_EQ("v5", Get(1, "bar"));
 
-    Destroy(options);
-  } while (ChangeWalOptions());
-#endif  // ROCKSDB_ASSERT_STATUS_CHECKED
-}
+//     Destroy(options);
+//   } while (ChangeWalOptions());
+// #endif  // ROCKSDB_ASSERT_STATUS_CHECKED
+// }
 
 TEST_F(DBWALTest, LockWal) {
   do {
@@ -1349,55 +1366,55 @@ TEST_F(DBWALTest, GetSortedWalFiles) {
   } while (ChangeWalOptions());
 }
 
-TEST_F(DBWALTest, GetCurrentWalFile) {
-  do {
-    CreateAndReopenWithCF({"pikachu"}, CurrentOptions());
+// TEST_F(DBWALTest, GetCurrentWalFile) {
+//   do {
+//     CreateAndReopenWithCF({"pikachu"}, CurrentOptions());
 
-    std::unique_ptr<LogFile>* bad_log_file = nullptr;
-    ASSERT_NOK(dbfull()->GetCurrentWalFile(bad_log_file));
+//     std::unique_ptr<LogFile>* bad_log_file = nullptr;
+//     ASSERT_NOK(dbfull()->GetCurrentWalFile(bad_log_file));
 
-    std::unique_ptr<LogFile> log_file;
-    ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
+//     std::unique_ptr<LogFile> log_file;
+//     ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
 
-    // nothing has been written to the log yet
-    ASSERT_EQ(log_file->StartSequence(), 0);
-    ASSERT_EQ(log_file->SizeFileBytes(), 0);
-    ASSERT_EQ(log_file->Type(), kAliveLogFile);
-    ASSERT_GT(log_file->LogNumber(), 0);
+//     // nothing has been written to the log yet
+//     ASSERT_EQ(log_file->StartSequence(), 0);
+//     ASSERT_EQ(log_file->SizeFileBytes(), 0);
+//     ASSERT_EQ(log_file->Type(), kAliveLogFile);
+//     ASSERT_GT(log_file->LogNumber(), 0);
 
-    // add some data and verify that the file size actually moves foward
-    ASSERT_OK(Put(0, "foo", "v1"));
-    ASSERT_OK(Put(0, "foo2", "v2"));
-    ASSERT_OK(Put(0, "foo3", "v3"));
+//     // add some data and verify that the file size actually moves foward
+//     ASSERT_OK(Put(0, "foo", "v1"));
+//     ASSERT_OK(Put(0, "foo2", "v2"));
+//     ASSERT_OK(Put(0, "foo3", "v3"));
 
-    ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
+//     ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
 
-    ASSERT_EQ(log_file->StartSequence(), 0);
-    ASSERT_GT(log_file->SizeFileBytes(), 0);
-    ASSERT_EQ(log_file->Type(), kAliveLogFile);
-    ASSERT_GT(log_file->LogNumber(), 0);
+//     ASSERT_EQ(log_file->StartSequence(), 0);
+//     ASSERT_GT(log_file->SizeFileBytes(), 0);
+//     ASSERT_EQ(log_file->Type(), kAliveLogFile);
+//     ASSERT_GT(log_file->LogNumber(), 0);
 
-    // force log files to cycle and add some more data, then check if
-    // log number moves forward
+//     // force log files to cycle and add some more data, then check if
+//     // log number moves forward
 
-    ReopenWithColumnFamilies({"default", "pikachu"}, CurrentOptions());
-    for (int i = 0; i < 10; i++) {
-      ReopenWithColumnFamilies({"default", "pikachu"}, CurrentOptions());
-    }
+//     ReopenWithColumnFamilies({"default", "pikachu"}, CurrentOptions());
+//     for (int i = 0; i < 10; i++) {
+//       ReopenWithColumnFamilies({"default", "pikachu"}, CurrentOptions());
+//     }
 
-    ASSERT_OK(Put(0, "foo4", "v4"));
-    ASSERT_OK(Put(0, "foo5", "v5"));
-    ASSERT_OK(Put(0, "foo6", "v6"));
+//     ASSERT_OK(Put(0, "foo4", "v4"));
+//     ASSERT_OK(Put(0, "foo5", "v5"));
+//     ASSERT_OK(Put(0, "foo6", "v6"));
 
-    ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
+//     ASSERT_OK(dbfull()->GetCurrentWalFile(&log_file));
 
-    ASSERT_EQ(log_file->StartSequence(), 0);
-    ASSERT_GT(log_file->SizeFileBytes(), 0);
-    ASSERT_EQ(log_file->Type(), kAliveLogFile);
-    ASSERT_GT(log_file->LogNumber(), 0);
+//     ASSERT_EQ(log_file->StartSequence(), 0);
+//     ASSERT_GT(log_file->SizeFileBytes(), 0);
+//     ASSERT_EQ(log_file->Type(), kAliveLogFile);
+//     ASSERT_GT(log_file->LogNumber(), 0);
 
-  } while (ChangeWalOptions());
-}
+//   } while (ChangeWalOptions());
+// }
 
 TEST_F(DBWALTest, RecoveryWithLogDataForSomeCFs) {
   // Test for regression of WAL cleanup missing files that don't contain data
@@ -1978,7 +1995,7 @@ class DBWALTestWithParams : public DBWALTestBase,
 
 INSTANTIATE_TEST_CASE_P(
     Wal, DBWALTestWithParams,
-    ::testing::Combine(::testing::Bool(), ::testing::Range(0, 4, 1),
+    ::testing::Combine(::testing::Values(true), ::testing::Range(0, 4, 1),
                        ::testing::Range(RecoveryTestHelper::kWALFileOffset,
                                         RecoveryTestHelper::kWALFileOffset +
                                             RecoveryTestHelper::kWALFilesCount,

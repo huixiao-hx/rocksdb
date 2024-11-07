@@ -87,7 +87,8 @@ class Writer {
 
   ~Writer();
 
-  IOStatus AddRecord(const WriteOptions& write_options, const Slice& slice);
+  IOStatus AddRecord(const WriteOptions& write_options, const Slice& slice,
+                     SequenceNumber seqno = kMaxSequenceNumber);
   IOStatus AddCompressionTypeRecord(const WriteOptions& write_options);
   IOStatus AddLastSeqnoTypeRecord(const WriteOptions& write_options,
                                   SequenceNumber last_seqno);
@@ -119,6 +120,8 @@ class Writer {
 
   size_t TEST_block_offset() const { return block_offset_; }
 
+  SequenceNumber GetLastWriteSeqno() const { return last_write_seqno_; };
+
  private:
   std::unique_ptr<WritableFileWriter> dest_;
   size_t block_offset_;  // Current offset in block
@@ -144,6 +147,7 @@ class Writer {
   // Reusable compressed output buffer
   std::unique_ptr<char[]> compressed_buffer_;
 
+  SequenceNumber last_write_seqno_ = kMaxSequenceNumber;
   SequenceNumber last_seqno_ = kMaxSequenceNumber;
 
   // The recorded user-defined timestamp size that have been written so far.

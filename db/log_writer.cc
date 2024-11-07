@@ -92,7 +92,7 @@ bool Writer::PublishIfClosed() {
 }
 
 IOStatus Writer::AddRecord(const WriteOptions& write_options,
-                           const Slice& slice) {
+                           const Slice& slice, SequenceNumber seqno) {
   if (dest_->seen_error()) {
 #ifndef NDEBUG
     if (dest_->seen_injected_error()) {
@@ -119,83 +119,90 @@ IOStatus Writer::AddRecord(const WriteOptions& write_options,
   }
 
   IOStatus s;
-  IOOptions opts;
-  s = WritableFileWriter::PrepareIOOptions(write_options, opts);
-  if (s.ok()) {
-    do {
-      const int64_t leftover = kBlockSize - block_offset_;
-      assert(leftover >= 0);
-      if (leftover < header_size_) {
-        // Switch to a new block
-        if (leftover > 0) {
-          // Fill the trailer (literal below relies on kHeaderSize and
-          // kRecyclableHeaderSize being <= 11)
-          assert(header_size_ <= 11);
-          s = dest_->Append(opts,
-                            Slice("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-                                  static_cast<size_t>(leftover)),
-                            0 /* crc32c_checksum */);
-          if (!s.ok()) {
-            break;
+  bool skip_wal_write = false;
+  TEST_SYNC_POINT_CALLBACK("DBImplWrite::SkipWALWrite", &skip_wal_write);
+  if (!skip_wal_write) {
+    IOOptions opts;
+    s = WritableFileWriter::PrepareIOOptions(write_options, opts);
+    if (s.ok()) {
+      do {
+        const int64_t leftover = kBlockSize - block_offset_;
+        assert(leftover >= 0);
+        if (leftover < header_size_) {
+          // Switch to a new block
+          if (leftover > 0) {
+            // Fill the trailer (literal below relies on kHeaderSize and
+            // kRecyclableHeaderSize being <= 11)
+            assert(header_size_ <= 11);
+            s = dest_->Append(opts,
+                              Slice("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+                                    static_cast<size_t>(leftover)),
+                              0 /* crc32c_checksum */);
+            if (!s.ok()) {
+              break;
+            }
           }
+          block_offset_ = 0;
         }
-        block_offset_ = 0;
-      }
 
-      // Invariant: we never leave < header_size bytes in a block.
-      assert(static_cast<int64_t>(kBlockSize - block_offset_) >= header_size_);
+        // Invariant: we never leave < header_size bytes in a block.
+        assert(static_cast<int64_t>(kBlockSize - block_offset_) >=
+               header_size_);
 
-      const size_t avail = kBlockSize - block_offset_ - header_size_;
+        const size_t avail = kBlockSize - block_offset_ - header_size_;
 
-      // Compress the record if compression is enabled.
-      // Compress() is called at least once (compress_start=true) and after the
-      // previous generated compressed chunk is written out as one or more
-      // physical records (left=0).
-      if (compress_ && (compress_start || left == 0)) {
-        compress_remaining = compress_->Compress(
-            slice.data(), slice.size(), compressed_buffer_.get(), &left);
+        // Compress the record if compression is enabled.
+        // Compress() is called at least once (compress_start=true) and after
+        // the previous generated compressed chunk is written out as one or more
+        // physical records (left=0).
+        if (compress_ && (compress_start || left == 0)) {
+          compress_remaining = compress_->Compress(
+              slice.data(), slice.size(), compressed_buffer_.get(), &left);
 
-        if (compress_remaining < 0) {
-          // Set failure status
-          s = IOStatus::IOError("Unexpected WAL compression error");
-          s.SetDataLoss(true);
-          break;
-        } else if (left == 0) {
-          // Nothing left to compress
-          if (!compress_start) {
+          if (compress_remaining < 0) {
+            // Set failure status
+            s = IOStatus::IOError("Unexpected WAL compression error");
+            s.SetDataLoss(true);
             break;
+          } else if (left == 0) {
+            // Nothing left to compress
+            if (!compress_start) {
+              break;
+            }
           }
+          compress_start = false;
+          ptr = compressed_buffer_.get();
         }
-        compress_start = false;
-        ptr = compressed_buffer_.get();
+
+        const size_t fragment_length = (left < avail) ? left : avail;
+
+        RecordType type;
+        const bool end = (left == fragment_length && compress_remaining == 0);
+        if (begin && end) {
+          type = recycle_log_files_ ? kRecyclableFullType : kFullType;
+        } else if (begin) {
+          type = recycle_log_files_ ? kRecyclableFirstType : kFirstType;
+        } else if (end) {
+          type = recycle_log_files_ ? kRecyclableLastType : kLastType;
+        } else {
+          type = recycle_log_files_ ? kRecyclableMiddleType : kMiddleType;
+        }
+
+        s = EmitPhysicalRecord(write_options, type, ptr, fragment_length);
+        ptr += fragment_length;
+        left -= fragment_length;
+        begin = false;
+      } while (s.ok() && (left > 0 || compress_remaining > 0));
+    }
+    if (s.ok()) {
+      if (!manual_flush_) {
+        s = dest_->Flush(opts);
       }
-
-      const size_t fragment_length = (left < avail) ? left : avail;
-
-      RecordType type;
-      const bool end = (left == fragment_length && compress_remaining == 0);
-      if (begin && end) {
-        type = recycle_log_files_ ? kRecyclableFullType : kFullType;
-      } else if (begin) {
-        type = recycle_log_files_ ? kRecyclableFirstType : kFirstType;
-      } else if (end) {
-        type = recycle_log_files_ ? kRecyclableLastType : kLastType;
-      } else {
-        type = recycle_log_files_ ? kRecyclableMiddleType : kMiddleType;
-      }
-
-      s = EmitPhysicalRecord(write_options, type, ptr, fragment_length);
-      ptr += fragment_length;
-      left -= fragment_length;
-      begin = false;
-    } while (s.ok() && (left > 0 || compress_remaining > 0));
-  }
-  if (s.ok()) {
-    if (!manual_flush_) {
-      s = dest_->Flush(opts);
     }
   }
-
+  if (s.ok()) {
+    last_write_seqno_ = seqno;
+  }
   return s;
 }
 
