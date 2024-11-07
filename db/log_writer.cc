@@ -251,6 +251,45 @@ IOStatus Writer::AddCompressionTypeRecord(const WriteOptions& write_options) {
   return s;
 }
 
+IOStatus Writer::AddLastSeqnoTypeRecord(const WriteOptions& write_options,
+                                        SequenceNumber last_seqno) {
+  //   if (dest_->seen_error()) {
+  // #ifndef NDEBUG
+  //     if (dest_->seen_injected_error()) {
+  //       std::stringstream msg;
+  //       msg << "Seen " << FaultInjectionTestFS::kInjected
+  //           << " error. Skip writing buffer.";
+  //       return IOStatus::IOError(msg.str());
+  //     }
+  // #endif  // NDEBUG
+  //     return IOStatus::IOError("Seen error. Skip writing buffer.");
+  //   }
+
+  // hack
+  if (last_seqno == kMaxSequenceNumber) {
+    return IOStatus::OK();
+  }
+  last_seqno_ = last_seqno;
+
+  LastSequenceRecord record(last_seqno_);
+  std::string encode;
+  record.EncodeTo(&encode);
+  IOStatus s = EmitPhysicalRecord(write_options, kLastSequenceType,
+                                  encode.data(), encode.size());
+  if (s.ok()) {
+    if (!manual_flush_) {
+      IOOptions io_opts;
+      s = WritableFileWriter::PrepareIOOptions(write_options, io_opts);
+      if (s.ok()) {
+        s = dest_->Flush(io_opts);
+      }
+    }
+  } else {
+    // last_seqno_ = max?
+  }
+  return s;
+}
+
 IOStatus Writer::MaybeAddUserDefinedTimestampSizeRecord(
     const WriteOptions& write_options,
     const UnorderedMap<uint32_t, size_t>& cf_to_ts_sz) {
@@ -313,7 +352,7 @@ IOStatus Writer::EmitPhysicalRecord(const WriteOptions& write_options,
 
   uint32_t crc = type_crc_[t];
   if (t < kRecyclableFullType || t == kSetCompressionType ||
-      t == kUserDefinedTimestampSizeType) {
+      t == kLastSequenceType || t == kUserDefinedTimestampSizeType) {
     // Legacy record format
     assert(block_offset_ + kHeaderSize + n <= kBlockSize);
     header_size = kHeaderSize;

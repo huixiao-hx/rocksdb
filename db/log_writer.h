@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "db/dbformat.h"
 #include "db/log_format.h"
 #include "rocksdb/compression_type.h"
 #include "rocksdb/env.h"
@@ -88,6 +89,8 @@ class Writer {
 
   IOStatus AddRecord(const WriteOptions& write_options, const Slice& slice);
   IOStatus AddCompressionTypeRecord(const WriteOptions& write_options);
+  IOStatus AddLastSeqnoTypeRecord(const WriteOptions& write_options,
+                                  SequenceNumber last_seqno);
 
   // If there are column families in `cf_to_ts_sz` not included in
   // `recorded_cf_to_ts_sz_` and its user-defined timestamp size is non-zero,
@@ -140,6 +143,8 @@ class Writer {
   StreamingCompress* compress_;
   // Reusable compressed output buffer
   std::unique_ptr<char[]> compressed_buffer_;
+
+  SequenceNumber last_seqno_ = kMaxSequenceNumber;
 
   // The recorded user-defined timestamp size that have been written so far.
   // Since the user-defined timestamp size cannot be changed while the DB is

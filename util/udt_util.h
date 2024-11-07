@@ -21,6 +21,30 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+// Hack
+class LastSequenceRecord {
+ public:
+  LastSequenceRecord() {}
+  explicit LastSequenceRecord(SequenceNumber last_seqno)
+      : last_seqno_(last_seqno) {}
+
+  SequenceNumber GetLastSequence() const { return last_seqno_; }
+  inline void EncodeTo(std::string* dst) const {
+    assert(dst != nullptr);
+    PutFixed64(dst, last_seqno_);
+  }
+
+  inline Status DecodeFrom(Slice* src) {
+    if (!GetFixed64(src, &last_seqno_)) {
+      return Status::Corruption("Error decoding last seqno entry");
+    }
+    return Status::OK();
+  }
+
+ private:
+  SequenceNumber last_seqno_;
+};
+
 // Dummy record in WAL logs signaling user-defined timestamp sizes for
 // subsequent records.
 class UserDefinedTimestampSizeRecord {

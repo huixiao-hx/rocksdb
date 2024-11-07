@@ -185,6 +185,21 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
         }
         break;
       }
+      case kLastSequenceType: {
+        prospective_record_offset = physical_record_offset;
+        scratch->clear();
+        last_record_offset_ = prospective_record_offset;
+
+        LastSequenceRecord last_seqno_record(kMaxSequenceNumber);
+        Status s = last_seqno_record.DecodeFrom(&fragment);
+        if (!s.ok()) {
+          ReportCorruption(fragment.size(),
+                           "could not decode LastSequence record");
+        } else {
+          last_sequence_ = last_seqno_record.GetLastSequence();
+        }
+        break;
+      }
       case kUserDefinedTimestampSizeType:
       case kRecyclableUserDefinedTimestampSizeType: {
         if (in_fragmented_record && !scratch->empty()) {
@@ -549,7 +564,7 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size,
     buffer_.remove_prefix(header_size + length);
 
     if (!uncompress_ || type == kSetCompressionType ||
-        type == kUserDefinedTimestampSizeType ||
+        type == kLastSequenceType || type == kUserDefinedTimestampSizeType ||
         type == kRecyclableUserDefinedTimestampSizeType) {
       *result = Slice(header + header_size, length);
       return type;
@@ -924,7 +939,7 @@ bool FragmentBufferedReader::TryReadFragment(
   buffer_.remove_prefix(header_size + length);
 
   if (!uncompress_ || type == kSetCompressionType ||
-      type == kUserDefinedTimestampSizeType ||
+      type == kLastSequenceType || type == kUserDefinedTimestampSizeType ||
       type == kRecyclableUserDefinedTimestampSizeType) {
     *fragment = Slice(header + header_size, length);
     *fragment_type_or_err = type;

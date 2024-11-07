@@ -205,12 +205,52 @@ TEST_F(DBWALTest, WALHoleSkipSyncLastPortion) {
 
   Close();
   ASSERT_OK(fault_fs->DropUnsyncedFileData());
-  Reopen(options);
+  Status s = TryReopen(options);
+  ASSERT_TRUE(s.IsCorruption());
 
-  ASSERT_EQ("smallv", Get("key0"));
-  ASSERT_EQ("NOT_FOUND", Get("key1"));
-  ASSERT_EQ("smallv", Get("key2"));
-  ASSERT_EQ("NOT_FOUND", Get("key3"));
+  // ASSERT_EQ("smallv", Get("key0"));
+  // ASSERT_EQ("NOT_FOUND", Get("key1"));
+  // ASSERT_EQ("smallv", Get("key2"));
+  // ASSERT_EQ("NOT_FOUND", Get("key3"));
+
+  Close();
+}
+
+TEST_F(DBWALTest, NoWALHoleSkipSyncLastPortion) {
+  Options options = CurrentOptions();
+  options.wal_bytes_per_sync = 1024;
+  options.avoid_flush_during_shutdown = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+  options.manual_wal_flush = true;
+
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("key0", "smallv"));
+  const std::string big_v = "bigv" + std::string(1024 * 1024 * 15, 'v');
+  ASSERT_OK(Put("key1", big_v));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(Put("key2", "smallv"));
+  ASSERT_OK(Put("key3", big_v));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+
+  Close();
+  // ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_FALSE(s.IsCorruption());
+
+  // ASSERT_EQ("smallv", Get("key0"));
+  // ASSERT_EQ("NOT_FOUND", Get("key1"));
+  // ASSERT_EQ("smallv", Get("key2"));
+  // ASSERT_EQ("NOT_FOUND", Get("key3"));
 
   Close();
 }
@@ -243,11 +283,13 @@ TEST_F(DBWALTest, WALHoleCleanTruncate) {
   ASSERT_OK(Put("key2", "smallv"));
 
   Close();
-  Reopen(options);
+  Status s = TryReopen(options);
+  ASSERT_TRUE(s.IsCorruption());
+  // Reopen(options);
 
-  ASSERT_EQ("smallv", Get("key0"));
-  ASSERT_EQ("NOT_FOUND", Get("key1"));
-  ASSERT_EQ("smallv", Get("key2"));
+  // ASSERT_EQ("smallv", Get("key0"));
+  // ASSERT_EQ("NOT_FOUND", Get("key1"));
+  // ASSERT_EQ("smallv", Get("key2"));
 
   Close();
 }
@@ -260,7 +302,7 @@ TEST_F(DBWALTest, DisableWALEnableAgain) {
   WriteOptions writeOpt = WriteOptions();
   writeOpt.disableWAL = true;
   ASSERT_OK(Put("key1", "no_wal", writeOpt));
-   writeOpt.disableWAL = false;
+  writeOpt.disableWAL = false;
   ASSERT_OK(Put("key2", "wal", writeOpt));
 
   Close();

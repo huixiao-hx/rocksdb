@@ -39,8 +39,11 @@ enum RecordType {
   // User-defined timestamp sizes
   kUserDefinedTimestampSizeType = 10,
   kRecyclableUserDefinedTimestampSizeType = 11,
+
+  kLastSequenceType = 12,
+
 };
-constexpr int kMaxRecordType = kRecyclableUserDefinedTimestampSizeType;
+constexpr int kMaxRecordType = kLastSequenceType;
 
 constexpr unsigned int kBlockSize = 32768;
 

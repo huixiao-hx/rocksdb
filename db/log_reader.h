@@ -123,6 +123,8 @@ class Reader {
     return !first_record_read_ && compression_type_record_read_;
   }
 
+  SequenceNumber GetLastSequence() const { return last_sequence_; }
+
  protected:
   std::shared_ptr<Logger> info_log_;
   const std::unique_ptr<SequentialFileReader> file_;
@@ -161,6 +163,7 @@ class Reader {
   std::unique_ptr<char[]> uncompressed_buffer_;
   // Reusable uncompressed record
   std::string uncompressed_record_;
+  SequenceNumber last_sequence_ = kMaxSequenceNumber;
   // Used for stream hashing fragment content in ReadRecord()
   XXH3_state_t* hash_state_;
   // Used for stream hashing uncompressed buffer in ReadPhysicalRecord()

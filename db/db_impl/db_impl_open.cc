@@ -1255,6 +1255,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                              immutable_db_options_.wal_recovery_mode,
                              &record_checksum) &&
            status.ok()) {
+      auto seqno1 = versions_->LastSequence();
+      auto seqno2 = reader.GetLastSequence();
+      if (seqno2 != kMaxSequenceNumber && seqno1 < seqno2) {
+        return Status::Corruption("Previous log not recovered enough");
+      }
       if (record.size() < WriteBatchInternal::kHeader) {
         reporter.Corruption(record.size(),
                             Status::Corruption("log record too small"));
@@ -2001,6 +2006,10 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                                immutable_db_options_.manual_wal_flush,
                                immutable_db_options_.wal_compression);
     io_s = (*new_log)->AddCompressionTypeRecord(write_options);
+  }
+  if (io_s.ok()) {
+    io_s = (*new_log)->AddLastSeqnoTypeRecord(write_options,
+                                              versions_->LastSequence());
   }
   return io_s;
 }
