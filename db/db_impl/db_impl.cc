@@ -5867,6 +5867,7 @@ Status DBImpl::IngestExternalFile(
 
 Status DBImpl::IngestExternalFiles(
     const std::vector<IngestExternalFileArg>& args) {
+  const std::shared_ptr<SystemClock>& clock = env_->GetSystemClock();
   // TODO: plumb Env::IOActivity, Env::IOPriority
   const WriteOptions write_options;
 
@@ -5934,9 +5935,17 @@ Status DBImpl::IngestExternalFiles(
     total += arg.external_files.size();
   }
   uint64_t next_file_number = 0;
+
+  auto start_time = clock ? clock->NowMicros() : 0;
   Status status = ReserveFileNumbersBeforeIngestion(
       static_cast<ColumnFamilyHandleImpl*>(args[0].column_family)->cfd(), total,
       pending_output_elem, &next_file_number);
+  auto end_time = clock ? clock->NowMicros() : 0;
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "[DEBUG File Ingestion] ReserveFileNumbersBeforeIngestion time: %lu micros \n",
+      end_time - start_time);
+
   if (!status.ok()) {
     InstrumentedMutexLock l(&mutex_);
     ReleaseFileNumberFromPendingOutputs(pending_output_elem);
@@ -5954,6 +5963,8 @@ Status DBImpl::IngestExternalFiles(
 
   // TODO(yanqin) maybe make jobs run in parallel
   uint64_t start_file_number = next_file_number;
+
+  start_time = clock ? clock->NowMicros() : 0;
   for (size_t i = 1; i != num_cfs; ++i) {
     start_file_number += args[i - 1].external_files.size();
     auto* cfd =
@@ -5984,6 +5995,11 @@ Status DBImpl::IngestExternalFiles(
     }
     CleanupSuperVersion(super_version);
   }
+  end_time = clock ? clock->NowMicros() : 0;
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "[DEBUG File Ingestion] Job prepare time: %lu micros \n",
+                 end_time - start_time);
+
   if (!status.ok()) {
     for (size_t i = 0; i != num_cfs; ++i) {
       ingestion_jobs[i].Cleanup(status);
@@ -6004,6 +6020,7 @@ Status DBImpl::IngestExternalFiles(
     InstrumentedMutexLock l(&mutex_);
     TEST_SYNC_POINT("DBImpl::AddFile:MutexLock");
 
+    start_time = clock ? clock->NowMicros() : 0;
     // Stop writes to the DB by entering both write threads
     WriteThread::Writer w;
     write_thread_.EnterUnbatched(&w, &mutex_);
@@ -6018,6 +6035,10 @@ Status DBImpl::IngestExternalFiles(
     // memtable flush.
     // So wait here to ensure there is no pending write to memtable.
     WaitForPendingWrites();
+    end_time = clock ? clock->NowMicros() : 0;
+    ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                   "[DEBUG File Ingestion] WaitForPendingWrites time: %lu micros \n",
+                   end_time - start_time);
 
     num_running_ingest_file_ += static_cast<int>(num_cfs);
     TEST_SYNC_POINT("DBImpl::IngestExternalFile:AfterIncIngestFileCounter");
@@ -6046,6 +6067,7 @@ Status DBImpl::IngestExternalFiles(
                              &at_least_one_cf_need_flush);
 
     if (status.ok() && at_least_one_cf_need_flush) {
+      start_time = clock ? clock->NowMicros() : 0;
       FlushOptions flush_opts;
       flush_opts.allow_write_stall = true;
       if (immutable_db_options_.atomic_flush) {
@@ -6071,9 +6093,14 @@ Status DBImpl::IngestExternalFiles(
           }
         }
       }
+      end_time = clock ? clock->NowMicros() : 0;
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "[DEBUG File Ingestion] Memtable flushes time: %lu micros \n",
+                     end_time - start_time);
     }
     // Run ingestion jobs.
     if (status.ok()) {
+      start_time = clock ? clock->NowMicros() : 0;
       for (size_t i = 0; i != num_cfs; ++i) {
         mutex_.AssertHeld();
         status = ingestion_jobs[i].Run();
@@ -6082,8 +6109,13 @@ Status DBImpl::IngestExternalFiles(
         }
         ingestion_jobs[i].RegisterRange();
       }
+      end_time = clock ? clock->NowMicros() : 0;
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "[DEBUG File Ingestion] Job run time: %lu micros \n",
+                     end_time - start_time);
     }
     if (status.ok()) {
+      start_time = clock ? clock->NowMicros() : 0;
       ReadOptions read_options;
       read_options.fill_cache = args[0].options.fill_cache;
       autovector<ColumnFamilyData*> cfds_to_commit;
@@ -6137,6 +6169,10 @@ Status DBImpl::IngestExternalFiles(
         versions_->SetLastPublishedSequence(last_seqno + consumed_seqno_count);
         versions_->SetLastSequence(last_seqno + consumed_seqno_count);
       }
+      end_time = clock ? clock->NowMicros() : 0;
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "[DEBUG File Ingestion] LogAndApply to manifest time: %lu micros \n",
+                     end_time - start_time);
     }
 
     for (auto& job : ingestion_jobs) {
@@ -6144,6 +6180,7 @@ Status DBImpl::IngestExternalFiles(
     }
 
     if (status.ok()) {
+      start_time = clock ? clock->NowMicros() : 0;
       for (size_t i = 0; i != num_cfs; ++i) {
         auto* cfd =
             static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
@@ -6160,6 +6197,12 @@ Status DBImpl::IngestExternalFiles(
 #endif  // !NDEBUG
         }
       }
+      end_time = clock ? clock->NowMicros() : 0;
+      ROCKS_LOG_INFO(
+          immutable_db_options_.info_log,
+          "[DEBUG File Ingestion] InstallSuperVersionAndScheduleWork time: %lu micros \n",
+          end_time - start_time);
+
     } else if (versions_->io_status().IsIOError()) {
       // Error while writing to MANIFEST.
       // In fact, versions_->io_status() can also be the result of renaming
@@ -6178,9 +6221,14 @@ Status DBImpl::IngestExternalFiles(
     write_thread_.ExitUnbatched(&w);
 
     if (status.ok()) {
+      start_time = clock ? clock->NowMicros() : 0;
       for (auto& job : ingestion_jobs) {
         job.UpdateStats();
       }
+      end_time = clock ? clock->NowMicros() : 0;
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "[DEBUG File Ingestion] Update stats time: %lu micros \n",
+                     end_time - start_time);
     }
     ReleaseFileNumberFromPendingOutputs(pending_output_elem);
     num_running_ingest_file_ -= static_cast<int>(num_cfs);
@@ -6192,6 +6240,7 @@ Status DBImpl::IngestExternalFiles(
   // mutex_ is unlocked here
 
   // Cleanup
+  start_time = clock ? clock->NowMicros() : 0;
   for (size_t i = 0; i != num_cfs; ++i) {
     sv_ctxs[i].Clean();
     // This may rollback jobs that have completed successfully. This is
@@ -6207,6 +6256,10 @@ Status DBImpl::IngestExternalFiles(
       }
     }
   }
+  end_time = clock ? clock->NowMicros() : 0;
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "[DEBUG File Ingestion] Clean up and event notification time: %lu micros \n",
+                 end_time - start_time);
   return status;
 }
 
