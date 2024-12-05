@@ -27,6 +27,7 @@ struct ImmutableDBOptions {
   bool flush_verify_memtable_count;
   bool compaction_verify_record_count;
   bool track_and_verify_wals_in_manifest;
+  bool track_predecessor_wal;
   bool verify_sst_unique_id_in_manifest;
   Env* env;
   std::shared_ptr<RateLimiter> rate_limiter;

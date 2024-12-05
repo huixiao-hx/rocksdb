@@ -643,6 +643,8 @@ struct DBOptions {
   // Default: false
   bool track_and_verify_wals_in_manifest = false;
 
+  bool track_predecessor_wal = false;
+
   // If true, verifies the SST unique id between MANIFEST and actual file
   // each time an SST file is opened. This check ensures an SST file is not
   // overwritten or misplaced. A corruption error will be reported if mismatch

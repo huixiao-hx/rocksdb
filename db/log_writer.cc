@@ -11,6 +11,7 @@
 
 #include <cstdint>
 
+#include "db/wal_manager.h"
 #include "file/writable_file_writer.h"
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
@@ -31,7 +32,8 @@ Writer::Writer(std::unique_ptr<WritableFileWriter>&& dest, uint64_t log_number,
       header_size_(recycle_log_files ? kRecyclableHeaderSize : kHeaderSize),
       manual_flush_(manual_flush),
       compression_type_(compression_type),
-      compress_(nullptr) {
+      compress_(nullptr),
+      last_seqno_recorded_(kMaxSequenceNumber) {
   for (int i = 0; i <= kMaxRecordType; i++) {
     char t = static_cast<char>(i);
     type_crc_[i] = crc32c::Value(&t, 1);
@@ -92,7 +94,7 @@ bool Writer::PublishIfClosed() {
 }
 
 IOStatus Writer::AddRecord(const WriteOptions& write_options,
-                           const Slice& slice) {
+                           const Slice& slice, SequenceNumber seqno) {
   if (dest_->seen_error()) {
 #ifndef NDEBUG
     if (dest_->seen_injected_error()) {
@@ -196,6 +198,10 @@ IOStatus Writer::AddRecord(const WriteOptions& write_options,
     }
   }
 
+  if (s.ok()) {
+    last_seqno_recorded_ = seqno;
+  }
+
   return s;
 }
 
@@ -247,6 +253,65 @@ IOStatus Writer::AddCompressionTypeRecord(const WriteOptions& write_options) {
   } else {
     // Disable compression if the record could not be added.
     compression_type_ = kNoCompression;
+  }
+  return s;
+}
+
+IOStatus Writer::MaybeAddPredecessorWALInfoRecord(
+    const WriteOptions& write_options, uint64_t log_number, uint64_t size_bytes,
+    SequenceNumber last_seqno_recorded) {
+  if (dest_->seen_error()) {
+#ifndef NDEBUG
+    if (dest_->seen_injected_error()) {
+      std::stringstream msg;
+      msg << "Seen " << FaultInjectionTestFS::kInjected
+          << " error. Skip writing buffer.";
+      return IOStatus::IOError(msg.str());
+    }
+#endif  // NDEBUG
+    return IOStatus::IOError("Seen error. Skip writing buffer.");
+  }
+
+  if (log_number == 0 || size_bytes == 0 ||
+      last_seqno_recorded == kMaxSequenceNumber) {
+    // No need to add a record
+    return IOStatus::OK();
+  }
+
+  PredecessorWALInfoRecord record(log_number, size_bytes, last_seqno_recorded);
+  std::string encode;
+  record.EncodeTo(&encode);
+
+  // If there's not enough space for this record, switch to a new block.
+  const int64_t leftover = kBlockSize - block_offset_;
+  if (leftover < header_size_ + (int)encode.size()) {
+    IOOptions opts;
+    IOStatus s = WritableFileWriter::PrepareIOOptions(write_options, opts);
+    if (!s.ok()) {
+      return s;
+    }
+
+    std::vector<char> trailer(leftover, '\x00');
+    s = dest_->Append(opts, Slice(trailer.data(), trailer.size()));
+    if (!s.ok()) {
+      return s;
+    }
+
+    block_offset_ = 0;
+  }
+
+  RecordType type = recycle_log_files_ ? kRecyclePredecessorWALInfoType
+                                       : kPredecessorWALInfoType;
+  IOStatus s =
+      EmitPhysicalRecord(write_options, type, encode.data(), encode.size());
+  if (s.ok()) {
+    if (!manual_flush_) {
+      IOOptions io_opts;
+      s = WritableFileWriter::PrepareIOOptions(write_options, io_opts);
+      if (s.ok()) {
+        s = dest_->Flush(io_opts);
+      }
+    }
   }
   return s;
 }
@@ -313,7 +378,7 @@ IOStatus Writer::EmitPhysicalRecord(const WriteOptions& write_options,
 
   uint32_t crc = type_crc_[t];
   if (t < kRecyclableFullType || t == kSetCompressionType ||
-      t == kUserDefinedTimestampSizeType) {
+      t == kPredecessorWALInfoType || t == kUserDefinedTimestampSizeType) {
     // Legacy record format
     assert(block_offset_ + kHeaderSize + n <= kBlockSize);
     header_size = kHeaderSize;

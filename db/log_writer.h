@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "db/dbformat.h"
 #include "db/log_format.h"
 #include "rocksdb/compression_type.h"
 #include "rocksdb/env.h"
@@ -86,8 +87,13 @@ class Writer {
 
   ~Writer();
 
-  IOStatus AddRecord(const WriteOptions& write_options, const Slice& slice);
+  IOStatus AddRecord(const WriteOptions& write_options, const Slice& slice,
+                     SequenceNumber seqno = kMaxSequenceNumber);
   IOStatus AddCompressionTypeRecord(const WriteOptions& write_options);
+  IOStatus MaybeAddPredecessorWALInfoRecord(const WriteOptions& write_options,
+                                            uint64_t log_number,
+                                            uint64_t size_bytes,
+                                            SequenceNumber last_seqno_recorded);
 
   // If there are column families in `cf_to_ts_sz` not included in
   // `recorded_cf_to_ts_sz_` and its user-defined timestamp size is non-zero,
@@ -115,6 +121,8 @@ class Writer {
   bool BufferIsEmpty();
 
   size_t TEST_block_offset() const { return block_offset_; }
+
+  SequenceNumber GetLastSeqnoRecorded() const { return last_seqno_recorded_; };
 
  private:
   std::unique_ptr<WritableFileWriter> dest_;
@@ -145,6 +153,8 @@ class Writer {
   // Since the user-defined timestamp size cannot be changed while the DB is
   // running, existing entry in this map cannot be updated.
   UnorderedMap<uint32_t, size_t> recorded_cf_to_ts_sz_;
+
+  SequenceNumber last_seqno_recorded_;
 };
 
 }  // namespace log

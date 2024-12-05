@@ -523,7 +523,12 @@ IOStatus WritableFileWriter::SyncInternal(const IOOptions& opts,
     start_ts = FileOperationInfo::StartNow();
   }
 
-  if (use_fsync) {
+  uint64_t wal_num_to_skip = 0;
+  TEST_SYNC_POINT_CALLBACK("SkipSyncWAL", &wal_num_to_skip);
+  if (wal_num_to_skip != 0 && file_name_.find(std::to_string(wal_num_to_skip) +
+                                              ".log") != std::string::npos) {
+    s = IOStatus::OK();
+  } else if (use_fsync) {
     s = writable_file_->Fsync(opts, nullptr);
   } else {
     s = writable_file_->Sync(opts, nullptr);

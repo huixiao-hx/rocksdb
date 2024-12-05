@@ -2040,7 +2040,9 @@ class DBImpl : public DB {
       bool read_only, int job_id, SequenceNumber* next_sequence,
       bool* stop_replay_for_corruption, bool* stop_replay_by_wal_filter,
       uint64_t* corrupted_wal_number, bool* corrupted_wal_found,
-      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed);
+      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+      uint64_t* prev_log_number, SequenceNumber* prev_log_last_seqno_recorded,
+      uint64_t* prev_log_size);
 
   void SetupLogFileProcess(uint64_t wal_number);
 
@@ -2057,7 +2059,8 @@ class DBImpl : public DB {
       uint64_t* record_checksum, SequenceNumber* next_sequence,
       bool* stop_replay_for_corruption, Status* status,
       bool* stop_replay_by_wal_filter,
-      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed);
+      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+      SequenceNumber* prev_log_last_seqno_recorded);
 
   Status InitializeWriteBatchForLogRecord(
       Slice record, const std::unique_ptr<log::Reader>& reader,
@@ -3066,6 +3069,10 @@ class DBImpl : public DB {
   // The number of LockWAL called without matching UnlockWAL call.
   // See also lock_wal_write_token_
   uint32_t lock_wal_count_;
+
+  uint64_t predecessor_wal_log_num_;
+  uint64_t predecessor_wal_size_bytes_;
+  SequenceNumber predecessor_wal_last_seqno_recorded_;
 };
 
 class GetWithTimestampReadCallback : public ReadCallback {

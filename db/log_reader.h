@@ -13,7 +13,6 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
-
 #include "db/log_format.h"
 #include "file/sequence_file_reader.h"
 #include "rocksdb/options.h"
@@ -75,10 +74,16 @@ class Reader {
   // checksum of the record read and set record_checksum to it. The checksum is
   // calculated from the original buffers that contain the contents of the
   // record.
-  virtual bool ReadRecord(Slice* record, std::string* scratch,
-                          WALRecoveryMode wal_recovery_mode =
-                              WALRecoveryMode::kTolerateCorruptedTailRecords,
-                          uint64_t* record_checksum = nullptr);
+  virtual bool ReadRecord(
+      Slice* record, std::string* scratch,
+      WALRecoveryMode wal_recovery_mode =
+          WALRecoveryMode::kTolerateCorruptedTailRecords,
+      uint64_t* record_checksum = nullptr,
+      const bool* stop_replay_for_corruption = nullptr,
+      const uint64_t* min_wal_number = nullptr,
+      uint64_t* prev_log_number = nullptr,
+      SequenceNumber* prev_log_last_seqno_recorded = nullptr,
+      uint64_t* prev_log_size = nullptr);
 
   // Return the recorded user-defined timestamp size that have been read so
   // far. This only applies to WAL logs.
@@ -123,6 +128,14 @@ class Reader {
     return !first_record_read_ && compression_type_record_read_;
   }
 
+  uint64_t GetPredecessorLogNumber() { return predecessor_log_number_; }
+
+  uint64_t GetPredecessorSizeBytes() { return predecessor_size_bytes_; }
+
+  SequenceNumber GetPredecessorLastSeqnoRecorded() {
+    return predecessor_last_seqno_recorded_;
+  }
+
  protected:
   std::shared_ptr<Logger> info_log_;
   const std::unique_ptr<SequentialFileReader> file_;
@@ -165,6 +178,12 @@ class Reader {
   XXH3_state_t* hash_state_;
   // Used for stream hashing uncompressed buffer in ReadPhysicalRecord()
   XXH3_state_t* uncompress_hash_state_;
+
+  // Info about predecessor WAL for verification
+  bool predecessor_wal_info_type_record_read_;
+  uint64_t predecessor_log_number_;
+  uint64_t predecessor_size_bytes_;
+  SequenceNumber predecessor_last_seqno_recorded_;
 
   // The recorded user-defined timestamp sizes that have been read so far. This
   // is only for WAL logs.
@@ -224,7 +243,12 @@ class FragmentBufferedReader : public Reader {
   bool ReadRecord(Slice* record, std::string* scratch,
                   WALRecoveryMode wal_recovery_mode =
                       WALRecoveryMode::kTolerateCorruptedTailRecords,
-                  uint64_t* record_checksum = nullptr) override;
+                  uint64_t* record_checksum = nullptr,
+                  const bool* stop_replay_for_corruption = nullptr,
+                  const uint64_t* min_wal_number = nullptr,
+                  uint64_t* prev_log_number = nullptr,
+                  SequenceNumber* prev_log_last_seqno_recorded = nullptr,
+                  uint64_t* prev_log_size = nullptr) override;
   void UnmarkEOF() override;
 
  private:

@@ -754,6 +754,11 @@ Status DBImpl::Recover(
       }
     }
 
+    // Optional - not for repaired db
+    // if (!is_new_db && wal_files.empty()) {
+    //   return Status::Corruption("Opening an existing DB with no WAL files");
+    // }
+
     if (immutable_db_options_.track_and_verify_wals_in_manifest) {
       if (!immutable_db_options_.best_efforts_recovery) {
         // Verify WALs in MANIFEST.
@@ -1191,13 +1196,18 @@ Status DBImpl::ProcessLogFiles(
   bool flushed = false;
   uint64_t corrupted_wal_number = kMaxSequenceNumber;
 
+  uint64_t prev_log_number = 0;
+  SequenceNumber prev_log_last_seqno_recorded = kMaxSequenceNumber;
+  uint64_t prev_log_size = 0;
+
   for (auto wal_number : wal_numbers) {
     if (status.ok()) {
-      status =
-          ProcessLogFile(wal_number, min_wal_number, is_retry, read_only,
-                         job_id, next_sequence, &stop_replay_for_corruption,
-                         &stop_replay_by_wal_filter, &corrupted_wal_number,
-                         corrupted_wal_found, version_edits, &flushed);
+      status = ProcessLogFile(
+          wal_number, min_wal_number, is_retry, read_only, job_id,
+          next_sequence, &stop_replay_for_corruption,
+          &stop_replay_by_wal_filter, &corrupted_wal_number,
+          corrupted_wal_found, version_edits, &flushed, &prev_log_number,
+          &prev_log_last_seqno_recorded, &prev_log_size);
     }
   }
 
@@ -1218,7 +1228,9 @@ Status DBImpl::ProcessLogFile(
     int job_id, SequenceNumber* next_sequence, bool* stop_replay_for_corruption,
     bool* stop_replay_by_wal_filter, uint64_t* corrupted_wal_number,
     bool* corrupted_wal_found,
-    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed) {
+    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+    uint64_t* prev_log_number, SequenceNumber* prev_log_last_seqno_recorded,
+    uint64_t* prev_log_size) {
   assert(stop_replay_by_wal_filter);
 
   // Variable initialization starts
@@ -1284,7 +1296,8 @@ Status DBImpl::ProcessLogFile(
 
     bool read_record = reader->ReadRecord(
         &record, &scratch, immutable_db_options_.wal_recovery_mode,
-        &record_checksum);
+        &record_checksum, stop_replay_for_corruption, &min_wal_number,
+        prev_log_number, prev_log_last_seqno_recorded, prev_log_size);
 
     // FIXME(hx235): consolidate `read_record` and `status`
     if (!read_record || !status.ok()) {
@@ -1296,7 +1309,7 @@ Status DBImpl::ProcessLogFile(
         record, reader, running_ts_sz, wal_number, fname, read_only, job_id,
         logFileDropped, &reporter, &record_checksum, next_sequence,
         stop_replay_for_corruption, &status, stop_replay_by_wal_filter,
-        version_edits, flushed);
+        version_edits, flushed, prev_log_last_seqno_recorded);
 
     if (!process_status.ok()) {
       return process_status;
@@ -1312,6 +1325,16 @@ Status DBImpl::ProcessLogFile(
   }
 
   FinishLogFileProcess(next_sequence, status);
+
+  if (status.ok()) {
+    *prev_log_number = wal_number;
+    assert(*prev_log_last_seqno_recorded);
+    // *prev_log_last_seqno_recorded = *next_sequence - 1;
+    uint64_t bytes;
+    if (env_->GetFileSize(fname, &bytes).ok()) {
+      *prev_log_size = bytes;
+    }
+  }
   return status;
 }
 
@@ -1383,11 +1406,13 @@ Status DBImpl::ProcessLogRecord(
     uint64_t* record_checksum, SequenceNumber* next_sequence,
     bool* stop_replay_for_corruption, Status* status,
     bool* stop_replay_by_wal_filter,
-    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed) {
+    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+    SequenceNumber* prev_log_last_seqno_recorded) {
   assert(reporter);
   assert(stop_replay_for_corruption);
   assert(status);
   assert(stop_replay_by_wal_filter);
+  assert(prev_log_last_seqno_recorded);
 
   Status process_status;
   bool has_valid_writes = false;
@@ -1461,6 +1486,10 @@ Status DBImpl::ProcessLogRecord(
   process_status = MaybeWriteLevel0TableForRecovery(
       has_valid_writes, read_only, wal_number, job_id, next_sequence,
       version_edits, flushed);
+
+  if (process_status.ok()) {
+    *prev_log_last_seqno_recorded = sequence;
+  }
 
   return process_status;
 }
@@ -2238,7 +2267,13 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                                immutable_db_options_.manual_wal_flush,
                                immutable_db_options_.wal_compression);
     io_s = (*new_log)->AddCompressionTypeRecord(write_options);
+    if (io_s.ok() && immutable_db_options_.track_predecessor_wal) {
+      io_s = (*new_log)->MaybeAddPredecessorWALInfoRecord(
+          write_options, predecessor_wal_log_num_, predecessor_wal_size_bytes_,
+          predecessor_wal_last_seqno_recorded_);
+    }
   }
+
   return io_s;
 }
 

@@ -1406,7 +1406,8 @@ IOStatus DBImpl::WriteToWAL(const WriteBatch& merged_batch,
   if (!io_s.ok()) {
     return io_s;
   }
-  io_s = log_writer->AddRecord(write_options, log_entry);
+  io_s = log_writer->AddRecord(write_options, log_entry,
+                               WriteBatchInternal::Sequence(&merged_batch));
 
   if (UNLIKELY(needs_locking)) {
     log_write_mutex_.Unlock();
@@ -2269,6 +2270,14 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
   if (creating_new_log) {
     // TODO: Write buffer size passed in should be max of all CF's instead
     // of mutable_cf_options.write_buffer_size.
+    if (!logs_.empty()) {
+      log::Writer* cur_log_writer = logs_.back().writer;
+      predecessor_wal_log_num_ = cur_log_writer->get_log_number();
+      predecessor_wal_size_bytes_ = cur_log_writer->file()->GetFileSize();
+      predecessor_wal_last_seqno_recorded_ =
+          cur_log_writer->GetLastSeqnoRecorded();
+    }
+
     io_s = CreateWAL(write_options, new_log_number, recycle_log_number,
                      preallocate_block_size, &new_log);
     if (s.ok()) {
