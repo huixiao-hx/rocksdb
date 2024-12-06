@@ -10,6 +10,7 @@
 #include "db/log_reader.h"
 
 #include <cstdio>
+#include <iostream>
 
 #include "db/wal_manager.h"
 #include "file/sequence_file_reader.h"
@@ -209,6 +210,7 @@ bool Reader::ReadRecord(
           ReportCorruption(fragment.size(),
                            "could not decode PredecessorWALInfoType record");
         } else {
+          std::cout << "Predecessor WAL info decoded " << std::endl;
           predecessor_log_number_ = predecessor_wal_info_record.GetLogNumber();
           predecessor_size_bytes_ = predecessor_wal_info_record.GetSizeBytes();
           predecessor_last_seqno_recorded_ =
