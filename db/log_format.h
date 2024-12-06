@@ -17,7 +17,7 @@
 namespace ROCKSDB_NAMESPACE {
 namespace log {
 
-enum RecordType {
+enum RecordType : int {
   // Zero is reserved for preallocated files
   kZeroType = 0,
   kFullType = 1,
@@ -39,7 +39,10 @@ enum RecordType {
   // User-defined timestamp sizes
   kUserDefinedTimestampSizeType = 10,
   kRecyclableUserDefinedTimestampSizeType = 11,
+
+  // Reserve kRecordTypeSafeIgnoreMask = 16
 };
+const int kRecordTypeSafeIgnoreMask = 1 << 4;
 constexpr int kMaxRecordType = kRecyclableUserDefinedTimestampSizeType;
 
 constexpr unsigned int kBlockSize = 32768;
