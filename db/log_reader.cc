@@ -10,6 +10,7 @@
 #include "db/log_reader.h"
 
 #include <cstdio>
+#include <iostream>
 
 #include "file/sequence_file_reader.h"
 #include "port/lang.h"
@@ -319,6 +320,8 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
           ReportCorruption(
               (fragment.size() + (in_fragmented_record ? scratch->size() : 0)),
               reason.c_str());
+        } else {
+          std::cout << "Ignore record type " << record_type << std::endl;
         }
         in_fragmented_record = false;
         scratch->clear();
