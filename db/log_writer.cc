@@ -23,7 +23,7 @@ namespace ROCKSDB_NAMESPACE::log {
 
 Writer::Writer(std::unique_ptr<WritableFileWriter>&& dest, uint64_t log_number,
                bool recycle_log_files, bool manual_flush,
-               CompressionType compression_type)
+               CompressionType compression_type, bool track_and_verify_wals)
     : dest_(std::move(dest)),
       block_offset_(0),
       log_number_(log_number),
@@ -33,6 +33,7 @@ Writer::Writer(std::unique_ptr<WritableFileWriter>&& dest, uint64_t log_number,
       manual_flush_(manual_flush),
       compression_type_(compression_type),
       compress_(nullptr),
+      track_and_verify_wals_(track_and_verify_wals),
       last_seqno_recorded_(kMaxSequenceNumber) {
   for (int i = 0; i <= kMaxRecordType; i++) {
     char t = static_cast<char>(i);
@@ -269,6 +270,10 @@ IOStatus Writer::MaybeAddPredecessorWALInfo(const WriteOptions& write_options,
     }
 #endif  // NDEBUG
     return IOStatus::IOError("Seen error. Skip writing buffer.");
+  }
+
+  if (!track_and_verify_wals_) {
+    return IOStatus::OK();
   }
 
   std::string encode;

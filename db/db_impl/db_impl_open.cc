@@ -1272,7 +1272,8 @@ Status DBImpl::ProcessLogFile(
   }
 
   Status init_status = InitializeLogReader(
-      wal_number, is_retry, fname, &old_log_record, &status, &reporter, reader);
+      wal_number, is_retry, fname, stop_replay_for_corruption, min_wal_number,
+      predecessor_wal_info, &old_log_record, &status, &reporter, reader);
   if (!init_status.ok()) {
     assert(status.ok());
     status.PermitUncheckedError();
@@ -1291,8 +1292,7 @@ Status DBImpl::ProcessLogFile(
 
     bool read_record = reader->ReadRecord(
         &record, &scratch, immutable_db_options_.wal_recovery_mode,
-        &record_checksum, stop_replay_for_corruption, &min_wal_number,
-        predecessor_wal_info);
+        &record_checksum);
 
     // FIXME(hx235): consolidate `read_record` and `status`
     if (!read_record || !status.ok()) {
@@ -1342,12 +1342,12 @@ void DBImpl::SetupLogFileProcess(uint64_t wal_number) {
                  static_cast<int>(immutable_db_options_.wal_recovery_mode));
 }
 
-Status DBImpl::InitializeLogReader(uint64_t wal_number, bool is_retry,
-                                   std::string& fname,
-                                   bool* const old_log_record,
-                                   Status* const reporter_status,
-                                   DBOpenLogReporter* reporter,
-                                   std::unique_ptr<log::Reader>& reader) {
+Status DBImpl::InitializeLogReader(
+    uint64_t wal_number, bool is_retry, std::string& fname,
+    bool stop_replay_for_corruption, uint64_t min_wal_number,
+    const PredecessorWALInfo& predecessor_wal_info, bool* const old_log_record,
+    Status* const reporter_status, DBOpenLogReporter* reporter,
+    std::unique_ptr<log::Reader>& reader) {
   assert(old_log_record);
   assert(reporter_status);
   assert(reporter);
@@ -1385,9 +1385,10 @@ Status DBImpl::InitializeLogReader(uint64_t wal_number, bool is_retry,
   // paranoid_checks==false so that corruptions cause entire commits
   // to be skipped instead of propagating bad information (like overly
   // large sequence numbers).
-  reader.reset(new log::Reader(immutable_db_options_.info_log,
-                               std::move(file_reader), reporter,
-                               true /*checksum*/, wal_number));
+  reader.reset(new log::Reader(
+      immutable_db_options_.info_log, std::move(file_reader), reporter,
+      true /*checksum*/, wal_number, stop_replay_for_corruption, min_wal_number,
+      predecessor_wal_info));
   return status;
 }
 
@@ -2258,7 +2259,8 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
     *new_log = new log::Writer(std::move(file_writer), log_file_num,
                                immutable_db_options_.recycle_log_file_num > 0,
                                immutable_db_options_.manual_wal_flush,
-                               immutable_db_options_.wal_compression);
+                               immutable_db_options_.wal_compression,
+                               immutable_db_options_.track_and_verify_wal);
     io_s = (*new_log)->AddCompressionTypeRecord(write_options);
     if (io_s.ok() && immutable_db_options_.track_and_verify_wal) {
       io_s = (*new_log)->MaybeAddPredecessorWALInfo(write_options,

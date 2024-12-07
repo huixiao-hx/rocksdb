@@ -24,7 +24,9 @@ Reader::Reporter::~Reporter() = default;
 
 Reader::Reader(std::shared_ptr<Logger> info_log,
                std::unique_ptr<SequentialFileReader>&& _file,
-               Reporter* reporter, bool checksum, uint64_t log_num)
+               Reporter* reporter, bool checksum, uint64_t log_num,
+               bool stop_replay_for_corruption, uint64_t min_wal_number,
+               const PredecessorWALInfo& predecessor_wal_info)
     : info_log_(info_log),
       file_(std::move(_file)),
       reporter_(reporter),
@@ -37,13 +39,16 @@ Reader::Reader(std::shared_ptr<Logger> info_log,
       last_record_offset_(0),
       end_of_buffer_offset_(0),
       log_number_(log_num),
+      stop_replay_for_corruption_(stop_replay_for_corruption),
+      min_wal_number_(min_wal_number),
+      predecessor_wal_info_(predecessor_wal_info),
       recycled_(false),
       first_record_read_(false),
       compression_type_(kNoCompression),
       compression_type_record_read_(false),
       uncompress_(nullptr),
       hash_state_(nullptr),
-      uncompress_hash_state_(nullptr){}
+      uncompress_hash_state_(nullptr) {}
 
 Reader::~Reader() {
   delete[] backing_store_;
@@ -182,6 +187,60 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
                            "could not decode SetCompressionType record");
         } else {
           InitCompression(compression_record);
+        }
+        break;
+      }
+      case kPredecessorWALInfoType:
+      case kRecyclePredecessorWALInfoType: {
+        prospective_record_offset = physical_record_offset;
+        scratch->clear();
+        last_record_offset_ = prospective_record_offset;
+
+        PredecessorWALInfo expected_predecessor_wal_info;
+        Status s = expected_predecessor_wal_info.DecodeFrom(&fragment);
+        if (!s.ok()) {
+          ReportCorruption(fragment.size(),
+                           "could not decode PredecessorWALInfoType record");
+        } else {
+          //   predecessor_log_number_ = predecessor_wal_info.GetLogNumber();
+          //   predecessor_size_bytes_ = predecessor_wal_info.GetSizeBytes();
+          //   predecessor_last_seqno_recorded_ =
+          //       predecessor_wal_info.GetLastSeqnoRecorded();
+          //   predecessor_wal_info_type_record_read_ = true;
+          //   assert(predecessor_log_number_ != 0 && predecessor_size_bytes_ !=
+          //   0
+          //   &&
+          //          predecessor_last_seqno_recorded_ != kMaxSequenceNumber);
+          //   if (wal_recovery_mode !=
+          //   WALRecoveryMode::kSkipAnyCorruptedRecords
+          //   &&
+          //       min_wal_number && prev_log_number &&
+          //       prev_log_last_seqno_recorded && prev_log_size &&
+          //       stop_replay_for_corruption &&
+          //       *stop_replay_for_corruption == false) {
+          //     if (*prev_log_number == 0) {
+          //       // first WAL
+          //       if (predecessor_log_number_ >= *min_wal_number) {
+          //         ReportCorruption(fragment.size(), "Hole in log num");
+          //         return false;
+          //       }
+          //     } else {
+          //       // non-first WAL
+          //       if (predecessor_log_number_ != *prev_log_number) {
+          //         ReportCorruption(fragment.size(), "Hole in log num");
+          //         return false;
+          //       }
+          //       if (predecessor_last_seqno_recorded_ !=
+          //           *prev_log_last_seqno_recorded) {
+          //         ReportCorruption(fragment.size(), "Hole in log seqno");
+          //         return false;
+          //       }
+          //       if (predecessor_size_bytes_ != *prev_log_size) {
+          //         ReportCorruption(fragment.size(), "Hole in size of same
+          //         seqno"); return false;
+          //       }
+          //     }
+          //   }
         }
         break;
       }
@@ -486,7 +545,8 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size,
     int header_size = kHeaderSize;
     const bool is_recyclable_type =
         ((type >= kRecyclableFullType && type <= kRecyclableLastType) ||
-         type == kRecyclableUserDefinedTimestampSizeType);
+         type == kRecyclableUserDefinedTimestampSizeType ||
+         type == kRecyclePredecessorWALInfoType);
     if (is_recyclable_type) {
       header_size = kRecyclableHeaderSize;
       if (first_record_read_ && !recycled_) {
@@ -551,6 +611,8 @@ unsigned int Reader::ReadPhysicalRecord(Slice* result, size_t* drop_size,
     buffer_.remove_prefix(header_size + length);
 
     if (!uncompress_ || type == kSetCompressionType ||
+        type == kPredecessorWALInfoType ||
+        type == kRecyclePredecessorWALInfoType ||
         type == kUserDefinedTimestampSizeType ||
         type == kRecyclableUserDefinedTimestampSizeType) {
       *result = Slice(header + header_size, length);
@@ -640,8 +702,9 @@ Status Reader::UpdateRecordedTimestampSize(
 }
 
 bool FragmentBufferedReader::ReadRecord(Slice* record, std::string* scratch,
-                                        WALRecoveryMode /*unused*/,
+                                        WALRecoveryMode wal_recovery_mode,
                                         uint64_t* /* checksum */) {
+  (void)wal_recovery_mode;
   assert(record != nullptr);
   assert(scratch != nullptr);
   record->clear();
@@ -730,7 +793,64 @@ bool FragmentBufferedReader::ReadRecord(Slice* record, std::string* scratch,
         }
         break;
       }
-
+      case kPredecessorWALInfoType:
+      case kRecyclePredecessorWALInfoType: {
+        // if (predecessor_wal_info_type_record_read_) {
+        //   ReportCorruption(fragment.size(),
+        //                    "read multiple PredecessorWALInfoType records");
+        // }
+        // fragments_.clear();
+        // prospective_record_offset = physical_record_offset;
+        // last_record_offset_ = prospective_record_offset;
+        // in_fragmented_record_ = false;
+        // PredecessorWALInfo predecessor_wal_info(
+        //     0 /* log_number */, 0 /* size_bytes */,
+        //     kMaxSequenceNumber /* last_seqno_recorded */);
+        // Status s = predecessor_wal_info.DecodeFrom(&fragment);
+        // if (!s.ok()) {
+        //   ReportCorruption(fragment.size(),
+        //                    "could not decode PredecessorWALInfoType record");
+        // } else {
+        //   predecessor_log_number_ = predecessor_wal_info.GetLogNumber();
+        //   predecessor_size_bytes_ = predecessor_wal_info.GetSizeBytes();
+        //   predecessor_last_seqno_recorded_ =
+        //       predecessor_wal_info.GetLastSeqnoRecorded();
+        //   predecessor_wal_info_type_record_read_ = true;
+        //   assert(predecessor_log_number_ != 0 && predecessor_size_bytes_ != 0
+        //   &&
+        //          predecessor_last_seqno_recorded_ != kMaxSequenceNumber);
+        //   if (wal_recovery_mode != WALRecoveryMode::kSkipAnyCorruptedRecords
+        //   &&
+        //       min_wal_number && prev_log_number &&
+        //       prev_log_last_seqno_recorded && prev_log_size &&
+        //       stop_replay_for_corruption &&
+        //       *stop_replay_for_corruption == false) {
+        //     if (*prev_log_number == 0) {
+        //       // first WAL
+        //       if (predecessor_log_number_ >= *min_wal_number) {
+        //         ReportCorruption(fragment.size(), "Hole in log num");
+        //         return false;
+        //       }
+        //     } else {
+        //       // non-first WAL
+        //       if (predecessor_log_number_ != *prev_log_number) {
+        //         ReportCorruption(fragment.size(), "Hole in log num");
+        //         return false;
+        //       }
+        //       if (predecessor_last_seqno_recorded_ !=
+        //           *prev_log_last_seqno_recorded) {
+        //         ReportCorruption(fragment.size(), "Hole in log seqno");
+        //         return false;
+        //       }
+        //       if (predecessor_size_bytes_ != *prev_log_size) {
+        //         ReportCorruption(fragment.size(), "Hole in size of same
+        //         seqno"); return false;
+        //       }
+        //     }
+        //   }
+        // }
+        break;
+      }
       case kUserDefinedTimestampSizeType:
       case kRecyclableUserDefinedTimestampSizeType: {
         if (in_fragmented_record_ && !scratch->empty()) {
@@ -871,7 +991,8 @@ bool FragmentBufferedReader::TryReadFragment(
   const uint32_t length = a | (b << 8);
   int header_size = kHeaderSize;
   if ((type >= kRecyclableFullType && type <= kRecyclableLastType) ||
-      type == kRecyclableUserDefinedTimestampSizeType) {
+      type == kRecyclableUserDefinedTimestampSizeType ||
+      type == kRecyclePredecessorWALInfoType) {
     if (first_record_read_ && !recycled_) {
       // A recycled log should have started with a recycled record
       *fragment_type_or_err = kBadRecord;
@@ -927,6 +1048,8 @@ bool FragmentBufferedReader::TryReadFragment(
   buffer_.remove_prefix(header_size + length);
 
   if (!uncompress_ || type == kSetCompressionType ||
+      type == kPredecessorWALInfoType ||
+      type == kRecyclePredecessorWALInfoType ||
       type == kUserDefinedTimestampSizeType ||
       type == kRecyclableUserDefinedTimestampSizeType) {
     *fragment = Slice(header + header_size, length);

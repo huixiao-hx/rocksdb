@@ -81,7 +81,8 @@ class Writer {
   explicit Writer(std::unique_ptr<WritableFileWriter>&& dest,
                   uint64_t log_number, bool recycle_log_files,
                   bool manual_flush = false,
-                  CompressionType compressionType = kNoCompression);
+                  CompressionType compressionType = kNoCompression,
+                  bool track_and_verify_wals = false);
   // No copying allowed
   Writer(const Writer&) = delete;
   void operator=(const Writer&) = delete;
@@ -152,6 +153,8 @@ class Writer {
   // Since the user-defined timestamp size cannot be changed while the DB is
   // running, existing entry in this map cannot be updated.
   UnorderedMap<uint32_t, size_t> recorded_cf_to_ts_sz_;
+
+  bool track_and_verify_wals_;
 
   SequenceNumber last_seqno_recorded_;
 };

@@ -59,7 +59,10 @@ class Reader {
   // If "checksum" is true, verify checksums if available.
   Reader(std::shared_ptr<Logger> info_log,
          std::unique_ptr<SequentialFileReader>&& file, Reporter* reporter,
-         bool checksum, uint64_t log_num);
+         bool checksum, uint64_t log_num,
+         bool stop_replay_for_corruption = false,
+         uint64_t min_wal_number = std::numeric_limits<uint64_t>::max(),
+         const PredecessorWALInfo& predecessor_wal_info = PredecessorWALInfo());
   // No copying allowed
   Reader(const Reader&) = delete;
   void operator=(const Reader&) = delete;
@@ -75,14 +78,10 @@ class Reader {
   // checksum of the record read and set record_checksum to it. The checksum is
   // calculated from the original buffers that contain the contents of the
   // record.
-  virtual bool ReadRecord(
-      Slice* record, std::string* scratch,
-      WALRecoveryMode wal_recovery_mode =
-          WALRecoveryMode::kTolerateCorruptedTailRecords,
-      uint64_t* record_checksum = nullptr,
-      const bool* stop_replay_for_corruption = nullptr,
-      const uint64_t* min_wal_number = nullptr,
-      const PredecessorWALInfo& predecessor_wal_info = PredecessorWALInfo());
+  virtual bool ReadRecord(Slice* record, std::string* scratch,
+                          WALRecoveryMode wal_recovery_mode =
+                              WALRecoveryMode::kTolerateCorruptedTailRecords,
+                          uint64_t* record_checksum = nullptr);
 
   // Return the recorded user-defined timestamp size that have been read so
   // far. This only applies to WAL logs.
@@ -151,6 +150,10 @@ class Reader {
   // which log number this is
   uint64_t const log_number_;
 
+  bool stop_replay_for_corruption_;
+  uint64_t min_wal_number_;
+  PredecessorWALInfo predecessor_wal_info_;
+
   // Whether this is a recycled log file
   bool recycled_;
 
@@ -218,21 +221,22 @@ class Reader {
 
 class FragmentBufferedReader : public Reader {
  public:
-  FragmentBufferedReader(std::shared_ptr<Logger> info_log,
-                         std::unique_ptr<SequentialFileReader>&& _file,
-                         Reporter* reporter, bool checksum, uint64_t log_num)
-      : Reader(info_log, std::move(_file), reporter, checksum, log_num),
+  FragmentBufferedReader(
+      std::shared_ptr<Logger> info_log,
+      std::unique_ptr<SequentialFileReader>&& _file, Reporter* reporter,
+      bool checksum, uint64_t log_num, bool stop_replay_for_corruption = false,
+      uint64_t min_wal_number = std::numeric_limits<uint64_t>::max(),
+      const PredecessorWALInfo& predecessor_wal_info = PredecessorWALInfo())
+      : Reader(info_log, std::move(_file), reporter, checksum, log_num,
+               stop_replay_for_corruption, min_wal_number,
+               predecessor_wal_info),
         fragments_(),
         in_fragmented_record_(false) {}
   ~FragmentBufferedReader() override {}
   bool ReadRecord(Slice* record, std::string* scratch,
                   WALRecoveryMode wal_recovery_mode =
                       WALRecoveryMode::kTolerateCorruptedTailRecords,
-                  uint64_t* record_checksum = nullptr,
-                  const bool* stop_replay_for_corruption = nullptr,
-                  const uint64_t* min_wal_number = nullptr,
-                  const PredecessorWALInfo& predecessor_wal_info =
-                      PredecessorWALInfo()) override;
+                  uint64_t* record_checksum = nullptr) override;
   void UnmarkEOF() override;
 
  private:

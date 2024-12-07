@@ -2045,11 +2045,13 @@ class DBImpl : public DB {
 
   void SetupLogFileProcess(uint64_t wal_number);
 
-  Status InitializeLogReader(uint64_t wal_number, bool is_retry,
-                             std::string& fname, bool* const old_log_record,
-                             Status* const reporter_status,
-                             DBOpenLogReporter* reporter,
-                             std::unique_ptr<log::Reader>& reader);
+  Status InitializeLogReader(
+      uint64_t wal_number, bool is_retry, std::string& fname,
+
+      bool stop_replay_for_corruption, uint64_t min_wal_number,
+      const PredecessorWALInfo& predecessor_wal_info,
+      bool* const old_log_record, Status* const reporter_status,
+      DBOpenLogReporter* reporter, std::unique_ptr<log::Reader>& reader);
   Status ProcessLogRecord(
       Slice record, const std::unique_ptr<log::Reader>& reader,
       const UnorderedMap<uint32_t, size_t>& running_ts_sz, uint64_t wal_number,
