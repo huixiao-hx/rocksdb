@@ -2040,7 +2040,8 @@ class DBImpl : public DB {
       bool read_only, int job_id, SequenceNumber* next_sequence,
       bool* stop_replay_for_corruption, bool* stop_replay_by_wal_filter,
       uint64_t* corrupted_wal_number, bool* corrupted_wal_found,
-      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed);
+      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+      PredecessorWALInfo& predecessor_wal_info);
 
   void SetupLogFileProcess(uint64_t wal_number);
 
@@ -2057,7 +2058,8 @@ class DBImpl : public DB {
       uint64_t* record_checksum, SequenceNumber* next_sequence,
       bool* stop_replay_for_corruption, Status* status,
       bool* stop_replay_by_wal_filter,
-      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed);
+      std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+      PredecessorWALInfo& predecessor_wal_info);
 
   Status InitializeWriteBatchForLogRecord(
       Slice record, const std::unique_ptr<log::Reader>& reader,
@@ -2511,6 +2513,7 @@ class DBImpl : public DB {
 
   IOStatus CreateWAL(const WriteOptions& write_options, uint64_t log_file_num,
                      uint64_t recycle_log_number, size_t preallocate_block_size,
+                     const PredecessorWALInfo& predecessor_wal_info,
                      log::Writer** new_log);
 
   // Validate self-consistency of DB options

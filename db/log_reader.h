@@ -75,10 +75,14 @@ class Reader {
   // checksum of the record read and set record_checksum to it. The checksum is
   // calculated from the original buffers that contain the contents of the
   // record.
-  virtual bool ReadRecord(Slice* record, std::string* scratch,
-                          WALRecoveryMode wal_recovery_mode =
-                              WALRecoveryMode::kTolerateCorruptedTailRecords,
-                          uint64_t* record_checksum = nullptr);
+  virtual bool ReadRecord(
+      Slice* record, std::string* scratch,
+      WALRecoveryMode wal_recovery_mode =
+          WALRecoveryMode::kTolerateCorruptedTailRecords,
+      uint64_t* record_checksum = nullptr,
+      const bool* stop_replay_for_corruption = nullptr,
+      const uint64_t* min_wal_number = nullptr,
+      const PredecessorWALInfo& predecessor_wal_info = PredecessorWALInfo());
 
   // Return the recorded user-defined timestamp size that have been read so
   // far. This only applies to WAL logs.
@@ -224,7 +228,11 @@ class FragmentBufferedReader : public Reader {
   bool ReadRecord(Slice* record, std::string* scratch,
                   WALRecoveryMode wal_recovery_mode =
                       WALRecoveryMode::kTolerateCorruptedTailRecords,
-                  uint64_t* record_checksum = nullptr) override;
+                  uint64_t* record_checksum = nullptr,
+                  const bool* stop_replay_for_corruption = nullptr,
+                  const uint64_t* min_wal_number = nullptr,
+                  const PredecessorWALInfo& predecessor_wal_info =
+                      PredecessorWALInfo()) override;
   void UnmarkEOF() override;
 
  private:

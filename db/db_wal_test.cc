@@ -137,6 +137,321 @@ class DBWALTestWithEnrichedEnv : public DBTestBase {
   EnrichedSpecialEnv* enriched_env_;
 };
 
+TEST_F(DBWALTest, WALHoleDetectPITRecycle) {
+  Options options = CurrentOptions();
+  options.wal_recovery_mode = WALRecoveryMode::kPointInTimeRecovery;
+  options.avoid_flush_during_shutdown = true;
+  options.recycle_log_file_num = 3;
+  options.wal_compression = kNoCompression;
+  options.manual_wal_flush = true;
+  options.track_and_verify_wal = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+
+  DestroyAndReopen(options);
+
+  // 4.log
+  ASSERT_OK(Put("flush1", "flush"));
+  ASSERT_OK(Put("flush2", "flush"));
+  ASSERT_OK(Put("flush3", "flush"));
+  ASSERT_OK(Flush());
+  // 8.log
+  ASSERT_OK(Put("flush4", "flush"));
+  ASSERT_OK(Put("flush5", "flush"));
+  ASSERT_OK(Put("flush6", "flush"));
+  ASSERT_OK(Flush());
+  // 10.log
+  ASSERT_OK(Put("flush7", "flush"));
+  ASSERT_OK(Put("flush8", "flush"));
+  ASSERT_OK(Put("flush9", "flush"));
+  ASSERT_OK(Flush());
+
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "SkipSyncWAL", [&](void* arg) {
+        uint64_t* wal_num_to_skip = static_cast<uint64_t*>(arg);
+        *wal_num_to_skip = 12;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  // 12.log
+  ASSERT_OK(Put("key0", "v0"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  // 14.log
+  ASSERT_OK(Put("key1", "v1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  SyncPoint::GetInstance()->DisableProcessing();
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_OK(s);
+
+  ASSERT_EQ("flush", Get("flush9"));
+  ASSERT_EQ("NOT_FOUND", Get("key0"));
+  ASSERT_EQ("NOT_FOUND", Get("key1"));
+
+  Close();
+}
+
+TEST_F(DBWALTest, WALHoleDetectPIT) {
+  Options options = CurrentOptions();
+  options.wal_recovery_mode = WALRecoveryMode::kPointInTimeRecovery;
+  options.avoid_flush_during_shutdown = true;
+  options.wal_compression = kNoCompression;
+  options.manual_wal_flush = true;
+  options.track_and_verify_wal = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+
+  DestroyAndReopen(options);
+
+  // 4.log
+  ASSERT_OK(Put("flush1", "flush"));
+  ASSERT_OK(Put("flush2", "flush"));
+  ASSERT_OK(Put("flush3", "flush"));
+  ASSERT_OK(Flush());
+  // 8.log
+  ASSERT_OK(Put("flush4", "flush"));
+  ASSERT_OK(Put("flush5", "flush"));
+  ASSERT_OK(Put("flush6", "flush"));
+  ASSERT_OK(Flush());
+  // 10.log
+  ASSERT_OK(Put("flush7", "flush"));
+  ASSERT_OK(Put("flush8", "flush"));
+  ASSERT_OK(Put("flush9", "flush"));
+  ASSERT_OK(Flush());
+
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "SkipSyncWAL", [&](void* arg) {
+        uint64_t* wal_num_to_skip = static_cast<uint64_t*>(arg);
+        *wal_num_to_skip = 12;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  // 12.log
+  ASSERT_OK(Put("key0", "v0"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  // 14.log
+  ASSERT_OK(Put("key1", "v1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  SyncPoint::GetInstance()->DisableProcessing();
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_OK(s);
+
+  ASSERT_EQ("flush", Get("flush9"));
+  ASSERT_EQ("NOT_FOUND", Get("key0"));
+  ASSERT_EQ("NOT_FOUND", Get("key1"));
+
+  Close();
+}
+
+TEST_F(DBWALTest, WALHoleDetectABS) {
+  Options options = CurrentOptions();
+  options.wal_recovery_mode = WALRecoveryMode::kAbsoluteConsistency;
+  options.avoid_flush_during_shutdown = true;
+  options.wal_compression = kNoCompression;
+  options.manual_wal_flush = true;
+  options.track_and_verify_wal = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+
+  DestroyAndReopen(options);
+
+  // 4.log
+  ASSERT_OK(Put("flush1", "flush"));
+  ASSERT_OK(Put("flush2", "flush"));
+  ASSERT_OK(Put("flush3", "flush"));
+  ASSERT_OK(Flush());
+  // 8.log
+  ASSERT_OK(Put("flush4", "flush"));
+  ASSERT_OK(Put("flush5", "flush"));
+  ASSERT_OK(Put("flush6", "flush"));
+  ASSERT_OK(Flush());
+  // 10.log
+  ASSERT_OK(Put("flush7", "flush"));
+  ASSERT_OK(Put("flush8", "flush"));
+  ASSERT_OK(Put("flush9", "flush"));
+  ASSERT_OK(Flush());
+
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "SkipSyncWAL", [&](void* arg) {
+        uint64_t* wal_num_to_skip = static_cast<uint64_t*>(arg);
+        *wal_num_to_skip = 12;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  // 12.log
+  ASSERT_OK(Put("key0", "v0"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  // 14.log
+  ASSERT_OK(Put("key1", "v1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  SyncPoint::GetInstance()->DisableProcessing();
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_TRUE(s.IsCorruption());
+  ASSERT_TRUE(s.ToString().find("Hole") != std::string::npos);
+
+  Close();
+}
+
+TEST_F(DBWALTest, WALHoleDetectTolerate) {
+  Options options = CurrentOptions();
+  options.wal_recovery_mode = WALRecoveryMode::kTolerateCorruptedTailRecords;
+  options.avoid_flush_during_shutdown = true;
+  options.wal_compression = kNoCompression;
+  options.manual_wal_flush = true;
+  options.track_and_verify_wal = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+
+  DestroyAndReopen(options);
+
+  // 4.log
+  ASSERT_OK(Put("flush1", "flush"));
+  ASSERT_OK(Put("flush2", "flush"));
+  ASSERT_OK(Put("flush3", "flush"));
+  ASSERT_OK(Flush());
+  // 8.log
+  ASSERT_OK(Put("flush4", "flush"));
+  ASSERT_OK(Put("flush5", "flush"));
+  ASSERT_OK(Put("flush6", "flush"));
+  ASSERT_OK(Flush());
+  // 10.log
+  ASSERT_OK(Put("flush7", "flush"));
+  ASSERT_OK(Put("flush8", "flush"));
+  ASSERT_OK(Put("flush9", "flush"));
+  ASSERT_OK(Flush());
+
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "SkipSyncWAL", [&](void* arg) {
+        uint64_t* wal_num_to_skip = static_cast<uint64_t*>(arg);
+        *wal_num_to_skip = 12;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  // 12.log
+  ASSERT_OK(Put("key0", "v0"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  // 14.log
+  ASSERT_OK(Put("key1", "v1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  SyncPoint::GetInstance()->DisableProcessing();
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_TRUE(s.IsCorruption());
+  ASSERT_TRUE(s.ToString().find("Hole") != std::string::npos);
+
+  Close();
+}
+
+TEST_F(DBWALTest, WALHoleDetectSkip) {
+  Options options = CurrentOptions();
+  options.wal_recovery_mode = WALRecoveryMode::kSkipAnyCorruptedRecords;
+  options.avoid_flush_during_shutdown = true;
+  options.wal_compression = kNoCompression;
+  options.manual_wal_flush = true;
+  options.track_and_verify_wal = true;
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs(
+      new FaultInjectionTestFS(env_->GetFileSystem()));
+  fault_fs->SetInjectUnsyncedDataLoss(true);
+  std::unique_ptr<Env> env(new CompositeEnvWrapper(env_, fault_fs));
+  options.env = env.get();
+
+  DestroyAndReopen(options);
+
+  // 4.log
+  ASSERT_OK(Put("flush1", "flush"));
+  ASSERT_OK(Put("flush2", "flush"));
+  ASSERT_OK(Put("flush3", "flush"));
+  ASSERT_OK(Flush());
+  // 8.log
+  ASSERT_OK(Put("flush4", "flush"));
+  ASSERT_OK(Put("flush5", "flush"));
+  ASSERT_OK(Put("flush6", "flush"));
+  ASSERT_OK(Flush());
+  // 10.log
+  ASSERT_OK(Put("flush7", "flush"));
+  ASSERT_OK(Put("flush8", "flush"));
+  ASSERT_OK(Put("flush9", "flush"));
+  ASSERT_OK(Flush());
+
+  env->SetBackgroundThreads(1, Env::HIGH);
+  test::SleepingBackgroundTask sleeping_task_low;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
+                 Env::Priority::HIGH);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "SkipSyncWAL", [&](void* arg) {
+        uint64_t* wal_num_to_skip = static_cast<uint64_t*>(arg);
+        *wal_num_to_skip = 12;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  // 12.log
+  ASSERT_OK(Put("key0", "v0"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  // 14.log
+  ASSERT_OK(Put("key1", "v1"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  SyncPoint::GetInstance()->DisableProcessing();
+
+  Close();
+  ASSERT_OK(fault_fs->DropUnsyncedFileData());
+  Status s = TryReopen(options);
+  ASSERT_OK(s);
+
+  ASSERT_EQ("flush", Get("flush9"));
+  ASSERT_EQ("NOT_FOUND", Get("key0"));
+  ASSERT_EQ("v1", Get("key1"));
+
+  Close();
+}
+
 // Test that the recovery would successfully avoid the gaps between the logs.
 // One known scenario that could cause this is that the application issue the
 // WAL deletion out of order. For the sake of simplicity in the test, here we
@@ -823,7 +1138,12 @@ TEST_F(DBWALTest, WALWithChecksumHandoff) {
     writeOpt.disableWAL = false;
     ASSERT_NOK(dbfull()->Put(writeOpt, handles_[1], "foo", "v3"));
 
+    // Temporarily set the matching checksum type to avoid injected WAL write
+    // error during open
+    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kCRC32c);
     ReopenWithColumnFamilies({"default", "pikachu"}, options);
+    fault_fs->SetChecksumHandoffFuncType(ChecksumType::kxxHash);
+
     // Due to the write failure, Get should not find
     ASSERT_NE("v3", Get(1, "foo"));
     ASSERT_EQ("v3", Get(1, "zoo"));

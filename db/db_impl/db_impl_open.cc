@@ -754,6 +754,11 @@ Status DBImpl::Recover(
       }
     }
 
+    if (!is_new_db && immutable_db_options_.track_and_verify_wal &&
+        wal_files.empty()) {
+      return Status::Corruption("Opening an existing DB with no WAL files");
+    }
+
     if (immutable_db_options_.track_and_verify_wals_in_manifest) {
       if (!immutable_db_options_.best_efforts_recovery) {
         // Verify WALs in MANIFEST.
@@ -1190,14 +1195,15 @@ Status DBImpl::ProcessLogFiles(
   bool stop_replay_for_corruption = false;
   bool flushed = false;
   uint64_t corrupted_wal_number = kMaxSequenceNumber;
+  PredecessorWALInfo predecessor_wal_info;
 
   for (auto wal_number : wal_numbers) {
     if (status.ok()) {
-      status =
-          ProcessLogFile(wal_number, min_wal_number, is_retry, read_only,
-                         job_id, next_sequence, &stop_replay_for_corruption,
-                         &stop_replay_by_wal_filter, &corrupted_wal_number,
-                         corrupted_wal_found, version_edits, &flushed);
+      status = ProcessLogFile(
+          wal_number, min_wal_number, is_retry, read_only, job_id,
+          next_sequence, &stop_replay_for_corruption,
+          &stop_replay_by_wal_filter, &corrupted_wal_number,
+          corrupted_wal_found, version_edits, &flushed, predecessor_wal_info);
     }
   }
 
@@ -1218,7 +1224,8 @@ Status DBImpl::ProcessLogFile(
     int job_id, SequenceNumber* next_sequence, bool* stop_replay_for_corruption,
     bool* stop_replay_by_wal_filter, uint64_t* corrupted_wal_number,
     bool* corrupted_wal_found,
-    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed) {
+    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+    PredecessorWALInfo& predecessor_wal_info) {
   assert(stop_replay_by_wal_filter);
 
   // Variable initialization starts
@@ -1284,7 +1291,8 @@ Status DBImpl::ProcessLogFile(
 
     bool read_record = reader->ReadRecord(
         &record, &scratch, immutable_db_options_.wal_recovery_mode,
-        &record_checksum);
+        &record_checksum, stop_replay_for_corruption, &min_wal_number,
+        predecessor_wal_info);
 
     // FIXME(hx235): consolidate `read_record` and `status`
     if (!read_record || !status.ok()) {
@@ -1296,7 +1304,7 @@ Status DBImpl::ProcessLogFile(
         record, reader, running_ts_sz, wal_number, fname, read_only, job_id,
         logFileDropped, &reporter, &record_checksum, next_sequence,
         stop_replay_for_corruption, &status, stop_replay_by_wal_filter,
-        version_edits, flushed);
+        version_edits, flushed, predecessor_wal_info);
 
     if (!process_status.ok()) {
       return process_status;
@@ -1312,6 +1320,14 @@ Status DBImpl::ProcessLogFile(
   }
 
   FinishLogFileProcess(next_sequence, status);
+
+  if (status.ok()) {
+    predecessor_wal_info.SetLogNumber(wal_number);
+    uint64_t bytes;
+    if (env_->GetFileSize(fname, &bytes).ok()) {
+      predecessor_wal_info.SetSizeBytes(bytes);
+    }
+  }
   return status;
 }
 
@@ -1383,7 +1399,8 @@ Status DBImpl::ProcessLogRecord(
     uint64_t* record_checksum, SequenceNumber* next_sequence,
     bool* stop_replay_for_corruption, Status* status,
     bool* stop_replay_by_wal_filter,
-    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed) {
+    std::unordered_map<int, VersionEdit>* version_edits, bool* flushed,
+    PredecessorWALInfo& predecessor_wal_info) {
   assert(reporter);
   assert(stop_replay_for_corruption);
   assert(status);
@@ -1461,6 +1478,10 @@ Status DBImpl::ProcessLogRecord(
   process_status = MaybeWriteLevel0TableForRecovery(
       has_valid_writes, read_only, wal_number, job_id, next_sequence,
       version_edits, flushed);
+
+  if (process_status.ok()) {
+    predecessor_wal_info.SetLastSeqnoRecorded(sequence);
+  }
 
   return process_status;
 }
@@ -2193,6 +2214,7 @@ Status DB::OpenAndTrimHistory(
 IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                            uint64_t log_file_num, uint64_t recycle_log_number,
                            size_t preallocate_block_size,
+                           const PredecessorWALInfo& predecessor_wal_info,
                            log::Writer** new_log) {
   IOStatus io_s;
   std::unique_ptr<FSWritableFile> lfile;
@@ -2238,7 +2260,12 @@ IOStatus DBImpl::CreateWAL(const WriteOptions& write_options,
                                immutable_db_options_.manual_wal_flush,
                                immutable_db_options_.wal_compression);
     io_s = (*new_log)->AddCompressionTypeRecord(write_options);
+    if (io_s.ok() && immutable_db_options_.track_and_verify_wal) {
+      io_s = (*new_log)->MaybeAddPredecessorWALInfo(write_options,
+                                                    predecessor_wal_info);
+    }
   }
+
   return io_s;
 }
 
@@ -2332,7 +2359,7 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     const size_t preallocate_block_size =
         impl->GetWalPreallocateBlockSize(max_write_buffer_size);
     s = impl->CreateWAL(write_options, new_log_number, 0 /*recycle_log_number*/,
-                        preallocate_block_size, &new_log);
+                        preallocate_block_size, PredecessorWALInfo(), &new_log);
     if (s.ok()) {
       // Prevent log files created by previous instance from being recycled.
       // They might be in alive_log_file_, and might get recycled otherwise.
