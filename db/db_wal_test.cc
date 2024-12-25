@@ -1919,17 +1919,17 @@ TEST_P(DBWALTrackAndVerifyWALsWithParamsTest, Basic) {
                         &sleeping_task, Env::Priority::HIGH);
 
   ASSERT_OK(Put("key1", "old_value"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  ASSERT_OK(Put("key1", "new_value"));
 
   // Create WAL hole
   VectorWalPtr log_files;
   ASSERT_OK(db_->GetSortedWalFiles(log_files));
-  ASSERT_EQ(log_files.size(), 1);
+  ASSERT_EQ(log_files.size(), 2);
+  // Drop `Put("key1", "old_value")` in WAL
   ASSERT_OK(test::TruncateFile(
-      options.env, LogFileName(dbname_, log_files.back()->LogNumber()),
+      options.env, LogFileName(dbname_, log_files.front()->LogNumber()),
       0 /* new_length */));
-
-  ASSERT_OK(dbfull()->TEST_SwitchWAL());
-  ASSERT_OK(Put("key1", "new_value"));
 
   Status s = TryReopen(options);
   if (options.wal_recovery_mode == WALRecoveryMode::kPointInTimeRecovery) {
